@@ -1,0 +1,30 @@
+{
+  "name": "ccpulse-daemon",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "embedded"],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean --external better-sqlite3 --external chokidar",
+    "dev": "tsx src/dev.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "ccpulse-core": "workspace:*",
+    "hono": "^4.6.10"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}

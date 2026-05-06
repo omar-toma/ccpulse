@@ -1,0 +1,48 @@
+@import url('https://fonts.bunny.net/css?family=inter:400,500,600,700|jetbrains-mono:400,500,600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+html, body, #root { height: 100%; }
+html { font-feature-settings: 'cv02','cv03','cv04','cv11'; }
+body {
+  margin: 0;
+  background: theme('colors.ink.0');
+  color: theme('colors.ink.700');
+  font-family: theme('fontFamily.sans');
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* selection */
+::selection { background: theme('colors.pulse.DEFAULT' / 0.25); color: theme('colors.ink.900'); }
+
+/* scrollbar */
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: theme('colors.ink.300'); border-radius: 9999px; border: 2px solid theme('colors.ink.0'); }
+*::-webkit-scrollbar-thumb:hover { background: theme('colors.ink.400'); }
+
+/* utility */
+.grid-bg {
+  background-image:
+    linear-gradient(theme('colors.ink.100') 1px, transparent 1px),
+    linear-gradient(90deg, theme('colors.ink.100') 1px, transparent 1px);
+  background-size: 32px 32px;
+  background-position: -1px -1px;
+}
+
+.shimmer {
+  background: linear-gradient(90deg,
+    rgba(255,255,255,0) 0%, rgba(255,255,255,0.04) 50%, rgba(255,255,255,0) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+@keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+/* Tremor BarList overrides — make the bars use our palette */
+.tremor-BarList-bar { background: theme('colors.ink.200') !important; }

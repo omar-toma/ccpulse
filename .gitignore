@@ -1,0 +1,11 @@
+node_modules
+dist
+.DS_Store
+*.log
+.turbo
+.cache
+packages/daemon/embedded
+packages/web/src/routeTree.gen.ts
+*.tsbuildinfo
+.playwright-cli/
+

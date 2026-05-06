@@ -1,0 +1,25 @@
+{
+  "name": "ccpulse",
+  "version": "0.1.0",
+  "description": "Real-time analytics dashboard for Claude Code sessions",
+  "type": "module",
+  "bin": {
+    "ccpulse": "./dist/bin.js"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup src/bin.ts --format esm --clean --external better-sqlite3 --external chokidar",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ccpulse-core": "workspace:*",
+    "ccpulse-daemon": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.6.3"
+  },
+  "keywords": ["claude", "claude-code", "analytics", "monitoring", "dashboard", "tokens", "telemetry"],
+  "license": "MIT"
+}
