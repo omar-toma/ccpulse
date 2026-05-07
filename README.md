@@ -2,7 +2,7 @@
 
 > A small dashboard for a small problem. One hour. Some snacks. That's it.
 
-![ccpulse](./docs/screenshot.png)
+![ccpulse](https://raw.githubusercontent.com/omar-toma/ccpulse/main/docs/screenshot.png)
 
 Live, local-first analytics for [Claude Code](https://claude.com/claude-code) sessions — tokens, cost, tools, latency, timelines — sliced by project and session.
 
