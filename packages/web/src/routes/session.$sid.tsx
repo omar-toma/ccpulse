@@ -15,9 +15,8 @@ const KINDS = ['tool', 'claude', 'user', 'system', 'attachment', 'other'] as con
 type Kind = (typeof KINDS)[number];
 
 function eventKind(e: any): Kind {
-  if (e.tool_name) return 'tool';
-  if (e.role === 'assistant') return 'claude';
   if (e.role === 'user') return 'user';
+  if (e.role === 'assistant') return e.tool_name ? 'tool' : 'claude';
   if (e.type === 'system') return 'system';
   if (e.type === 'attachment') return 'attachment';
   return 'other';
@@ -45,6 +44,10 @@ function SessionView() {
   const tools = useQuery({ queryKey: ['sessionTools', sid], queryFn: () => api.sessionTools(sid) });
 
   const events = sess.data?.events ?? [];
+  const meta = sess.data?.session;
+  const projectCwd = meta?.projectRoot ?? meta?.cwd ?? null;
+  const projectName = projectCwd ? projectCwd.slice(projectCwd.lastIndexOf('/') + 1) : null;
+  const sessionLabel = meta?.title ?? sid;
 
   const totals = events.reduce(
     (a, e: any) => ({
@@ -68,9 +71,9 @@ function SessionView() {
     return m;
   }, [events]);
 
-  const [sortBy, setSortBy] = useState<SortBy>('time');
-  const [sortDir, setSortDir] = useState<SortDir>('desc');
-  const [enabled, setEnabled] = useState<Set<Kind>>(() => new Set(KINDS));
+  const [sortBy, setSortBy] = usePersistedState<SortBy>('ccpulse:timeline:sortBy', 'time');
+  const [sortDir, setSortDir] = usePersistedState<SortDir>('ccpulse:timeline:sortDir', 'desc');
+  const [enabled, setEnabled] = usePersistedKindSet('ccpulse:timeline:kinds', new Set(KINDS));
   const [openUuid, setOpenUuid] = useState<string | null>(null);
 
   const visibleEvents = useMemo(() => {
@@ -95,8 +98,23 @@ function SessionView() {
     <div className="space-y-8">
       <div>
         <Link to="/" className="text-[11px] text-ink-500 hover:text-ink-700 font-mono">← projects</Link>
-        <h1 className="mt-2 font-mono text-xl text-ink-900 tracking-tight">{sid}</h1>
+        <h1 className="mt-2 font-mono text-xl text-ink-900 tracking-tight truncate">
+          {projectName && (
+            <>
+              <Link
+                to="/"
+                search={{ project: projectCwd! }}
+                className="text-ink-500 hover:text-ink-800"
+              >
+                {projectName}
+              </Link>
+              <span className="text-ink-400 mx-2">/</span>
+            </>
+          )}
+          <span className="text-ink-900">{sessionLabel}</span>
+        </h1>
         <div className="mt-1 text-[11px] font-mono text-ink-500">
+          {meta?.title ? <span className="mr-2">{sid}</span> : null}
           {events.length} events  ·  duration {fmtDuration(duration)}
         </div>
       </div>
@@ -114,8 +132,8 @@ function SessionView() {
           <CardHeader title="Tool usage" hint="count · avg · p95" />
           {tools.isLoading && <Skeleton rows={6} />}
           {tools.data && tools.data.length === 0 && <EmptyState title="No tool calls" body="" compact />}
-          <ul className="space-y-1">
-            {(tools.data ?? []).slice(0, 14).map((t, i) => (
+          <ul className="space-y-1 max-h-[22rem] overflow-auto pr-1">
+            {(tools.data ?? []).map((t, i) => (
               <li key={t.name} className="relative">
                 <div className="absolute inset-y-0 left-0 bg-ink-200 rounded" style={{ width: `${(t.count / toolMax) * 100}%` }} />
                 <div className="relative px-3 py-2 flex items-center gap-3 text-[13px]">
@@ -137,8 +155,8 @@ function SessionView() {
           <CardHeader title="Idle gaps" hint="pauses > 2 min" />
           {sess.isLoading && <Skeleton rows={3} />}
           {sess.data && sess.data.gaps.length === 0 && <EmptyState title="No idle gaps" body="Continuous activity throughout the session." compact />}
-          <ul className="space-y-1.5">
-            {(sess.data?.gaps ?? []).map((g: any, i: number) => (
+          <ul className="space-y-1.5 max-h-[22rem] overflow-auto pr-1">
+            {[...(sess.data?.gaps ?? [])].sort((a: any, b: any) => b.durationMs - a.durationMs).map((g: any, i: number) => (
               <li key={i} className="px-3 py-1.5 flex items-baseline justify-between text-[12px] font-mono">
                 <span className="text-ink-500">{new Date(g.from).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                 <span className="text-ink-700">{fmtDuration(g.durationMs)}</span>
@@ -182,40 +200,64 @@ function SessionView() {
               {visibleEvents.length === 0 && (
                 <tr><td colSpan={9} className="text-center py-8 text-ink-500">No events match the current filter.</td></tr>
               )}
-              {visibleEvents.map((e: any) => {
-                const total = eventTotalTokens(e);
-                return (
-                  <tr
-                    key={e.uuid}
-                    onClick={() => setOpenUuid(e.uuid)}
-                    className="border-t border-ink-300/60 hover:bg-ink-100/50 cursor-pointer"
-                  >
-                    <td className="px-3 py-1.5 text-ink-500 whitespace-nowrap">{new Date(e.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</td>
-                    <td className="px-2 py-1.5"><KindBadge kind={eventKind(e)} /></td>
-                    <td className="px-2 py-1.5 text-ink-700 truncate max-w-[1px]">
-                      {e.tool_name && <span className="text-pulse">{e.tool_name}</span>}
-                      {e.tool_name && e.model && <span className="text-ink-400 mx-1.5">·</span>}
-                      {e.model && <span className="text-ink-500">{e.model}</span>}
-                      {e.is_sidechain ? <span className="ml-2 px-1 rounded bg-fuchsia-500/15 text-fuchsia-300 text-[9px]">side</span> : null}
-                    </td>
-                    <Num value={e.input_tokens} />
-                    <Num value={e.output_tokens} />
-                    <Num value={e.cache_read} />
-                    <Num value={e.cache_create} />
-                    <Num value={total} emphasis />
-                    <td className={`px-2 py-1.5 text-right whitespace-nowrap tabular-nums ${e.cost > 0 ? 'text-pulse-glow' : 'text-ink-400'}`}>
-                      {e.cost > 0 ? `$${e.cost.toFixed(4)}` : '—'}
-                    </td>
-                  </tr>
-                );
-              })}
+              {visibleEvents.map((e: any) => (
+                <EventRow key={e.uuid} e={e} onOpen={setOpenUuid} />
+              ))}
             </tbody>
           </table>
         </div>
       </Card>
 
-      {openUuid && <EventModal uuid={openUuid} onClose={() => setOpenUuid(null)} />}
+      {openUuid && (
+        <EventModal
+          uuid={openUuid}
+          uuids={visibleEvents.map((e: any) => e.uuid)}
+          onChange={setOpenUuid}
+          onClose={() => setOpenUuid(null)}
+        />
+      )}
     </div>
+  );
+}
+
+function EventRow({ e, onOpen, indent }: { e: any; onOpen: (uuid: string) => void; indent?: boolean }) {
+  const total = eventTotalTokens(e);
+  return (
+    <tr
+      onClick={() => onOpen(e.uuid)}
+      className={`border-t border-ink-300/60 hover:bg-ink-100/50 cursor-pointer ${indent ? 'bg-indigo-500/[0.02]' : ''}`}
+    >
+      <td className={`px-3 py-1.5 text-ink-500 whitespace-nowrap ${indent ? 'pl-8' : ''}`}>
+        {new Date(e.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+      </td>
+      <td className="px-2 py-1.5"><KindBadge kind={eventKind(e)} /></td>
+      <td className="px-2 py-1.5 text-ink-700 max-w-[1px] align-top">
+        <div className="flex items-baseline gap-2 flex-wrap">
+          {e.tool_name && <span className="text-pulse">{e.tool_name}</span>}
+          {e.tool_name && e.model && <span className="text-ink-400">·</span>}
+          {e.model && <span className="text-ink-500">{e.model}</span>}
+          {e.hasThinking && (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-300 text-[9px] italic">
+              <span aria-hidden>✶</span> thinking
+            </span>
+          )}
+          {e.is_sidechain ? <span className="px-1 rounded bg-fuchsia-500/15 text-fuchsia-300 text-[9px]">side</span> : null}
+        </div>
+        {e.summary && (
+          <div className="text-ink-500 font-sans text-[12px] leading-snug line-clamp-2 mt-0.5 whitespace-pre-wrap break-words">
+            {e.summary}
+          </div>
+        )}
+      </td>
+      <Num value={e.input_tokens} />
+      <Num value={e.output_tokens} />
+      <Num value={e.cache_read} />
+      <Num value={e.cache_create} />
+      <Num value={total} emphasis />
+      <td className={`px-2 py-1.5 text-right whitespace-nowrap tabular-nums ${e.cost > 0 ? 'text-pulse-glow' : 'text-ink-400'}`}>
+        {e.cost > 0 ? `$${e.cost.toFixed(4)}` : '—'}
+      </td>
+    </tr>
   );
 }
 
@@ -223,15 +265,33 @@ function SessionView() {
    EVENT DETAIL MODAL
 ============================================================================ */
 
-function EventModal({ uuid, onClose }: { uuid: string; onClose: () => void }) {
+function EventModal({
+  uuid, uuids, onChange, onClose,
+}: {
+  uuid: string;
+  uuids: string[];
+  onChange: (uuid: string) => void;
+  onClose: () => void;
+}) {
   const detail = useQuery({ queryKey: ['event', uuid], queryFn: () => api.event(uuid) });
 
+  const idx = uuids.indexOf(uuid);
+  const prevUuid = idx > 0 ? uuids[idx - 1] : null;
+  const nextUuid = idx >= 0 && idx < uuids.length - 1 ? uuids[idx + 1] : null;
+
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { onClose(); return; }
+      if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement | null)?.isContentEditable) return;
+      if (e.key === 'ArrowUp' || e.key === 'k')  { if (prevUuid) { e.preventDefault(); onChange(prevUuid); } }
+      if (e.key === 'ArrowDown' || e.key === 'j') { if (nextUuid) { e.preventDefault(); onChange(nextUuid); } }
+    };
     window.addEventListener('keydown', onKey);
     document.body.style.overflow = 'hidden';
     return () => { window.removeEventListener('keydown', onKey); document.body.style.overflow = ''; };
-  }, [onClose]);
+  }, [onClose, onChange, prevUuid, nextUuid]);
 
   return (
     <div
@@ -245,8 +305,29 @@ function EventModal({ uuid, onClose }: { uuid: string; onClose: () => void }) {
         <div className="px-5 py-3 border-b border-ink-300 flex items-baseline gap-3">
           <h3 className="text-[12px] uppercase tracking-[0.16em] text-ink-700 font-medium">Event detail</h3>
           {detail.data && <KindBadge kind={eventKind(detail.data)} />}
-          <span className="ml-auto text-[10px] font-mono text-ink-500 truncate">{uuid}</span>
-          <button onClick={onClose} className="text-ink-500 hover:text-ink-800 text-lg leading-none -mt-0.5" aria-label="close">×</button>
+          {idx >= 0 && (
+            <span className="text-[10px] font-mono text-ink-500">
+              {idx + 1} / {uuids.length}
+            </span>
+          )}
+          <div className="ml-auto flex items-center gap-1.5">
+            <button
+              onClick={() => prevUuid && onChange(prevUuid)}
+              disabled={!prevUuid}
+              title="Previous (↑ / k)"
+              aria-label="previous event"
+              className="px-1.5 py-0.5 rounded text-ink-500 hover:text-ink-800 hover:bg-ink-100 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-ink-500"
+            >↑</button>
+            <button
+              onClick={() => nextUuid && onChange(nextUuid)}
+              disabled={!nextUuid}
+              title="Next (↓ / j)"
+              aria-label="next event"
+              className="px-1.5 py-0.5 rounded text-ink-500 hover:text-ink-800 hover:bg-ink-100 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-ink-500"
+            >↓</button>
+            <span className="text-[10px] font-mono text-ink-500 ml-1 truncate max-w-[14rem]">{uuid}</span>
+            <button onClick={onClose} className="text-ink-500 hover:text-ink-800 text-lg leading-none -mt-0.5 ml-1" aria-label="close">×</button>
+          </div>
         </div>
 
         {detail.isLoading && <div className="p-5"><Skeleton rows={6} /></div>}
@@ -676,7 +757,7 @@ function KindChip({
 const KIND_STYLES: Record<Kind, { activeBg: string; activeText: string; activeBorder: string; dot: string; chipBg: string; chipText: string }> = {
   tool:       { activeBg: 'bg-pulse/10',     activeText: 'text-pulse-glow', activeBorder: 'border-pulse/40', dot: 'bg-pulse',       chipBg: 'bg-pulse/15',     chipText: 'text-pulse-glow' },
   claude:     { activeBg: 'bg-sky-500/10',   activeText: 'text-sky-300',    activeBorder: 'border-sky-500/40', dot: 'bg-sky-400',   chipBg: 'bg-sky-500/15',   chipText: 'text-sky-300' },
-  user:       { activeBg: 'bg-ink-200',      activeText: 'text-ink-800',    activeBorder: 'border-ink-400', dot: 'bg-ink-600',      chipBg: 'bg-ink-200',      chipText: 'text-ink-700' },
+  user:       { activeBg: 'bg-violet-500/10', activeText: 'text-violet-300', activeBorder: 'border-violet-500/40', dot: 'bg-violet-400', chipBg: 'bg-violet-500/15', chipText: 'text-violet-300' },
   system:     { activeBg: 'bg-amber-500/10', activeText: 'text-amber-300',  activeBorder: 'border-amber-500/40', dot: 'bg-amber-400', chipBg: 'bg-amber-500/15', chipText: 'text-amber-300' },
   attachment: { activeBg: 'bg-fuchsia-500/10', activeText: 'text-fuchsia-300', activeBorder: 'border-fuchsia-500/40', dot: 'bg-fuchsia-400', chipBg: 'bg-fuchsia-500/15', chipText: 'text-fuchsia-300' },
   other:      { activeBg: 'bg-ink-200',      activeText: 'text-ink-700',    activeBorder: 'border-ink-400', dot: 'bg-ink-500',      chipBg: 'bg-ink-200',      chipText: 'text-ink-500' },
@@ -685,4 +766,40 @@ const KIND_STYLES: Record<Kind, { activeBg: string; activeText: string; activeBo
 function KindBadge({ kind }: { kind: Kind }) {
   const s = KIND_STYLES[kind];
   return <span className={`px-1.5 py-0.5 rounded ${s.chipBg} ${s.chipText} text-[10px]`}>{kind}</span>;
+}
+
+/* ---------------------------------------------------------------------------
+   localStorage-backed state hooks
+--------------------------------------------------------------------------- */
+
+function usePersistedState<T extends string>(key: string, initial: T): [T, (v: T | ((prev: T) => T)) => void] {
+  const [value, setValue] = useState<T>(() => {
+    if (typeof window === 'undefined') return initial;
+    try {
+      const raw = window.localStorage.getItem(key);
+      return raw == null ? initial : (raw as T);
+    } catch { return initial; }
+  });
+  useEffect(() => {
+    try { window.localStorage.setItem(key, value); } catch { /* quota / disabled */ }
+  }, [key, value]);
+  return [value, setValue];
+}
+
+function usePersistedKindSet(key: string, initial: Set<Kind>): [Set<Kind>, (updater: Set<Kind> | ((prev: Set<Kind>) => Set<Kind>)) => void] {
+  const [value, setValue] = useState<Set<Kind>>(() => {
+    if (typeof window === 'undefined') return initial;
+    try {
+      const raw = window.localStorage.getItem(key);
+      if (raw == null) return initial;
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return initial;
+      const valid = parsed.filter((k): k is Kind => (KINDS as readonly string[]).includes(k));
+      return new Set(valid);
+    } catch { return initial; }
+  });
+  useEffect(() => {
+    try { window.localStorage.setItem(key, JSON.stringify([...value])); } catch { /* quota / disabled */ }
+  }, [key, value]);
+  return [value, setValue];
 }

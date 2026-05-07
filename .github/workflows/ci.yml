@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r typecheck
+      - run: pnpm -r test
+      - run: pnpm build
+      - name: Pack and smoke install
+        working-directory: packages/cli
+        run: |
+          npm pack
+          mkdir /tmp/ccpulse-smoke
+          cd /tmp/ccpulse-smoke
+          npm init -y
+          npm install "$GITHUB_WORKSPACE"/packages/cli/ccpulse-*.tgz
+          ./node_modules/.bin/ccpulse --version || true

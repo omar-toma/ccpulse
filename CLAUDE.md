@@ -40,6 +40,10 @@ pnpm dev:web         # terminal 2 — Vite on :5174, proxies /api → :7878
 
 The full release build is: `core` → `web` → `daemon` → `cli` → `embed-web.ts`. `package.json`'s `build` script runs them in order.
 
+**The CLI bundles `ccpulse-core` and `ccpulse-daemon` into `packages/cli/dist/bin.js`** (tsup with only `chokidar` external). The globally-linked `ccpulse` binary (`~/Library/pnpm/ccpulse` → this repo's `packages/cli/dist/bin.js`) therefore runs whatever core code was bundled at the time `pnpm --filter ccpulse build` last ran. After editing anything in `core/` or `daemon/`, rebuild the CLI too — restarting the daemon alone is not enough. `pnpm dev:daemon` uses tsx on source and does not have this issue.
+
+**`pnpm --filter ccpulse build` clears `packages/cli/dist/` (tsup `--clean`), which deletes `cli/dist/embedded` too.** `embed-web.ts` copies the web bundle to both `packages/daemon/embedded` and `packages/cli/dist/embedded`. Always re-run `pnpm exec tsx scripts/embed-web.ts` after a CLI rebuild, or the daemon serves the "UI not built" page. Top-level `pnpm build` does this in the right order.
+
 ## Running the built CLI
 
 ```bash

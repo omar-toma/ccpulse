@@ -51,13 +51,35 @@ export class JsonlWatcher extends EventEmitter {
   start() {
     if (this.watcher) return;
     if (!existsSync(this.rootDir)) return;
-    this.watcher = chokidar.watch(`${this.rootDir}/**/*.jsonl`, {
+    // Chokidar 4 removed glob support — watch the dir and filter via `ignored`.
+    this.watcher = chokidar.watch(this.rootDir, {
       ignoreInitial: true,
       awaitWriteFinish: false,
       persistent: true,
+      ignored: (path, stats) => {
+        if (!stats) return false;            // unknown — let it through, will resolve on stat
+        if (stats.isDirectory()) return false;
+        return !path.endsWith('.jsonl');
+      },
     });
-    const handler = (path: string) => this.queue(path);
-    this.watcher.on('add', handler).on('change', handler);
+    const handler = (event: string) => (path: string) => {
+      if (process.env.CCPULSE_DEBUG_WATCHER) {
+        // eslint-disable-next-line no-console
+        console.log(`[watcher] ${event} ${path}`);
+      }
+      this.queue(path);
+    };
+    this.watcher.on('add', handler('add')).on('change', handler('change'));
+    this.watcher.on('error', (err) => {
+      // eslint-disable-next-line no-console
+      console.error('[watcher] error', err);
+    });
+    if (process.env.CCPULSE_DEBUG_WATCHER) {
+      this.watcher.on('ready', () => {
+        // eslint-disable-next-line no-console
+        console.log('[watcher] ready, watching', `${this.rootDir}/**/*.jsonl`);
+      });
+    }
   }
 
   private queue(path: string) {
@@ -72,7 +94,7 @@ export class JsonlWatcher extends EventEmitter {
     this.pending.clear();
     for (const p of paths) {
       const stats = this.indexer.ingestFile(p);
-      if (stats.events || stats.toolCalls || stats.toolResults || stats.aiTitles) {
+      if (stats.events || stats.toolCalls || stats.toolResults || stats.aiTitles || stats.bytesRead) {
         const cwd = this.cwdFromPath(p);
         const ev: WatchEvent = { path: p, stats, cwd };
         this.emit('ingest', ev);

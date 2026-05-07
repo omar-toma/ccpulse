@@ -33,7 +33,10 @@ export function createServer(opts: ServerOptions = {}): Server {
   const bus = new EventEmitter();
   bus.setMaxListeners(0);
 
-  watcher.on('ingest', (e: WatchEvent) => bus.emit('ingest', e));
+  watcher.on('ingest', (e: WatchEvent) => {
+    queries.invalidate();
+    bus.emit('ingest', e);
+  });
 
   const app = new Hono();
   app.use('/api/*', cors());
@@ -144,6 +147,7 @@ function resolveStaticRoot(explicit?: string): string | null {
   if (explicit && existsSync(explicit)) return resolve(explicit);
   // candidates relative to daemon dist or src
   const candidates = [
+    join(import.meta.dirname ?? '', 'embedded'),
     join(process.cwd(), 'packages/daemon/embedded'),
     join(process.cwd(), 'packages/web/dist'),
     join(import.meta.dirname ?? '', '../embedded'),

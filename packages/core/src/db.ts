@@ -1,8 +1,12 @@
-import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname } from 'node:path';
 
-export type DB = Database.Database;
+const nodeRequire = createRequire(import.meta.url);
+const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
+type DatabaseSync = InstanceType<typeof DatabaseSync>;
+
+export type DB = DatabaseSync;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS projects (
@@ -78,9 +82,21 @@ CREATE TABLE IF NOT EXISTS meta (
 
 export function openDb(path: string): DB {
   mkdirSync(dirname(path), { recursive: true });
-  const db = new Database(path);
-  db.pragma('journal_mode = WAL');
-  db.pragma('synchronous = NORMAL');
+  const db = new DatabaseSync(path);
+  db.exec('PRAGMA journal_mode = WAL');
+  db.exec('PRAGMA synchronous = NORMAL');
   db.exec(SCHEMA);
   return db;
+}
+
+export function withTransaction<T>(db: DB, fn: () => T): T {
+  db.exec('BEGIN');
+  try {
+    const result = fn();
+    db.exec('COMMIT');
+    return result;
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
 }

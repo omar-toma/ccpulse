@@ -1,5 +1,6 @@
 import { openSync, readSync, closeSync, statSync, existsSync } from 'node:fs';
 import type { DB } from './db.js';
+import { withTransaction } from './db.js';
 import { parseLine } from './parser.js';
 import type { ParsedLine } from './parser.js';
 
@@ -34,6 +35,7 @@ export class Indexer {
               @toolName, @toolUseId, @toolResultForId)
       ON CONFLICT(uuid) DO NOTHING
     `);
+    this.upsertEvent.setAllowUnknownNamedParameters(true);
     this.upsertToolCall = db.prepare(`
       INSERT INTO tool_calls (tool_use_id, session_id, event_uuid, ts, name, input_json)
       VALUES (@toolUseId, @sessionId, @eventUuid, @ts, @name, @inputJson)
@@ -108,8 +110,46 @@ export class Indexer {
   }
 
   private applyLines(lines: string[], stats: IngestStats) {
-    const apply = this.db.transaction((batch: ParsedLine[]) => {
-      for (const p of batch) {
+    const parsed = lines.map(parseLine).filter((p) => p.event || p.aiTitle || p.toolCalls.length || p.toolResults.length);
+    if (!parsed.length) return;
+
+    // Dedupe duplicate-usage assistant events. Claude Code can split one API turn into
+    // multiple assistant events (e.g. thinking on one event, tool_use on the next) and
+    // stamp ALL of them with the same `usage` block. Only the first should carry the
+    // tokens; the rest are zeroed so aggregates and per-event tokens don't double-count.
+    const byUuid = new Map<string, any>();
+    for (const p of parsed) if (p.event) byUuid.set(p.event.uuid, p.event);
+    const lookupParentUsage = this.db.prepare(
+      'SELECT role, input_tokens, output_tokens, cache_read, cache_create FROM events WHERE uuid = ?',
+    );
+    for (const p of parsed) {
+      const e = p.event;
+      if (!e || e.role !== 'assistant' || !e.parentUuid) continue;
+      let parent: { role: string | null; inputTokens: number; outputTokens: number; cacheRead: number; cacheCreate: number } | null =
+        byUuid.get(e.parentUuid) ?? null;
+      if (!parent) {
+        const r = lookupParentUsage.get(e.parentUuid) as
+          | { role: string | null; input_tokens: number; output_tokens: number; cache_read: number; cache_create: number }
+          | undefined;
+        if (r) parent = { role: r.role, inputTokens: r.input_tokens, outputTokens: r.output_tokens, cacheRead: r.cache_read, cacheCreate: r.cache_create };
+      }
+      if (!parent || parent.role !== 'assistant') continue;
+      const sameUsage =
+        parent.inputTokens === e.inputTokens &&
+        parent.outputTokens === e.outputTokens &&
+        parent.cacheRead === e.cacheRead &&
+        parent.cacheCreate === e.cacheCreate;
+      const hasUsage = !!(e.inputTokens || e.outputTokens || e.cacheRead || e.cacheCreate);
+      if (sameUsage && hasUsage) {
+        e.inputTokens = 0;
+        e.outputTokens = 0;
+        e.cacheRead = 0;
+        e.cacheCreate = 0;
+      }
+    }
+
+    withTransaction(this.db, () => {
+      for (const p of parsed) {
         if (p.aiTitle) {
           this.updateSessionTitle.run(p.aiTitle.sessionId, p.aiTitle.title);
           stats.aiTitles++;
@@ -117,24 +157,21 @@ export class Indexer {
         }
         if (p.event) {
           const e = p.event;
-          this.upsertEvent.run(e);
+          this.upsertEvent.run(e as never);
           stats.events++;
           if (e.cwd) this.upsertProject.run(e.cwd, e.ts);
-          this.upsertSession.run({ id: e.sessionId, cwd: e.cwd, ts: e.ts, branch: e.gitBranch });
+          this.upsertSession.run({ id: e.sessionId, cwd: e.cwd, ts: e.ts, branch: e.gitBranch } as never);
         }
         for (const tc of p.toolCalls) {
-          this.upsertToolCall.run(tc);
+          this.upsertToolCall.run(tc as never);
           stats.toolCalls++;
         }
         for (const tr of p.toolResults) {
-          this.upsertToolResult.run(tr);
+          this.upsertToolResult.run(tr as never);
           stats.toolResults++;
         }
       }
     });
-
-    const parsed = lines.map(parseLine).filter((p) => p.event || p.aiTitle || p.toolCalls.length || p.toolResults.length);
-    if (parsed.length) apply(parsed);
   }
 
   /** Drop all data and reset offsets. Used by `ccpulse reindex`. */

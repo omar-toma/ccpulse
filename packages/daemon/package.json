@@ -12,7 +12,7 @@
   },
   "files": ["dist", "embedded"],
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts --clean --external better-sqlite3 --external chokidar",
+    "build": "tsup src/index.ts --format esm --dts --clean --target node22 --external chokidar",
     "dev": "tsx src/dev.ts",
     "typecheck": "tsc --noEmit"
   },

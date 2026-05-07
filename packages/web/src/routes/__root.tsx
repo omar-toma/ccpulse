@@ -7,7 +7,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
 });
 
 function RootLayout() {
-  const lastIngest = useLastIngest();
+  const { lastIngest, status } = useStream();
   return (
     <div className="min-h-screen flex flex-col bg-ink-0 text-ink-700">
       <header className="sticky top-0 z-30 bg-ink-0/90 backdrop-blur border-b border-ink-300">
@@ -19,7 +19,7 @@ function RootLayout() {
           </Link>
           <span className="hidden md:inline text-ink-500 text-xs">real-time analytics for Claude Code sessions</span>
           <div className="ml-auto flex items-center gap-3">
-            <LivePill active={lastIngest > 0} since={lastIngest} />
+            <LivePill since={lastIngest} status={status} />
           </div>
         </div>
       </header>
@@ -47,16 +47,27 @@ function PulseMark() {
   );
 }
 
-function LivePill({ active, since }: { active: boolean; since: number }) {
+type StreamStatus = 'connecting' | 'open' | 'error';
+
+function LivePill({ since, status }: { since: number; status: StreamStatus }) {
   const ago = useTick(since);
-  const fresh = active && Date.now() - since < 4000;
+  const fresh = since > 0 && Date.now() - since < 4000;
+  const ok = status === 'open';
+  const dotColor = !ok ? 'bg-rose-400' : fresh ? 'bg-pulse' : 'bg-ink-500';
+  const label =
+    status === 'connecting' ? 'connecting…' :
+    status === 'error' ? 'disconnected' :
+    fresh ? `live · ${ago}` :
+    since ? `idle · last ${ago}` :
+    'idle';
+  const tone = !ok ? 'text-rose-300' : 'text-ink-600';
   return (
-    <div className="flex items-center gap-2 text-[11px] font-mono text-ink-600">
+    <div className={`flex items-center gap-2 text-[11px] font-mono ${tone}`} title={`SSE ${status}${since ? ` · last ingest ${new Date(since).toLocaleTimeString()}` : ''}`}>
       <span className="relative inline-flex w-2 h-2">
         {fresh && <span className="absolute inset-0 rounded-full bg-pulse opacity-60 animate-ping" />}
-        <span className={`relative inline-flex w-2 h-2 rounded-full ${fresh ? 'bg-pulse' : 'bg-ink-500'}`} />
+        <span className={`relative inline-flex w-2 h-2 rounded-full ${dotColor}`} />
       </span>
-      <span>{since ? `live · ${ago}` : 'idle'}</span>
+      <span>{label}</span>
     </div>
   );
 }
@@ -76,13 +87,26 @@ function useTick(stamp: number) {
   return `${Math.round(dt / 3600000)}h ago`;
 }
 
-function useLastIngest(): number {
-  const [t, setT] = useState(0);
+function useStream(): { lastIngest: number; status: StreamStatus } {
+  const [lastIngest, setLastIngest] = useState(0);
+  const [status, setStatus] = useState<StreamStatus>('connecting');
   useEffect(() => {
     const src = new EventSource('/api/stream');
-    const h = () => setT(Date.now());
-    src.addEventListener('ingest', h);
-    return () => { src.removeEventListener('ingest', h); src.close(); };
+    const onIngest = () => setLastIngest(Date.now());
+    const onPing = () => setStatus('open'); // ping confirms channel is alive
+    const onOpen = () => setStatus('open');
+    const onError = () => setStatus(src.readyState === EventSource.OPEN ? 'open' : 'error');
+    src.addEventListener('ingest', onIngest);
+    src.addEventListener('ping', onPing);
+    src.addEventListener('open', onOpen);
+    src.addEventListener('error', onError);
+    return () => {
+      src.removeEventListener('ingest', onIngest);
+      src.removeEventListener('ping', onPing);
+      src.removeEventListener('open', onOpen);
+      src.removeEventListener('error', onError);
+      src.close();
+    };
   }, []);
-  return t;
+  return { lastIngest, status };
 }

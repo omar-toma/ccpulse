@@ -135,8 +135,8 @@ function ProjectView({ cwd }: { cwd: string }) {
           <CardHeader title="Tool usage" hint="count · avg latency" />
           {tools.isLoading && <Skeleton rows={6} />}
           {tools.data && tools.data.length === 0 && <EmptyState title="No tool calls yet" body="Tool calls appear here as Claude uses Bash, Read, Edit, etc." compact />}
-          <ul className="space-y-1">
-            {(tools.data ?? []).slice(0, 12).map((t, i) => {
+          <ul className="space-y-1 max-h-[22rem] overflow-auto pr-1">
+            {(tools.data ?? []).map((t, i) => {
               const max = tools.data![0]!.count;
               return (
                 <li key={t.name} className="relative">

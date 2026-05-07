@@ -1,25 +1,40 @@
 {
-  "name": "ccpulse",
+  "name": "@omartoma/ccpulse",
   "version": "0.1.0",
   "description": "Real-time analytics dashboard for Claude Code sessions",
   "type": "module",
   "bin": {
     "ccpulse": "./dist/bin.js"
   },
-  "files": ["dist"],
+  "files": ["dist", "README.md", "LICENSE"],
   "scripts": {
-    "build": "tsup src/bin.ts --format esm --clean --external better-sqlite3 --external chokidar",
-    "typecheck": "tsc --noEmit"
+    "build": "tsup src/bin.ts --format esm --clean --target node22 --external chokidar",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "cd ../.. && pnpm build"
   },
   "dependencies": {
-    "ccpulse-core": "workspace:*",
-    "ccpulse-daemon": "workspace:*"
+    "chokidar": "^4.0.1"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",
+    "ccpulse-core": "workspace:*",
+    "ccpulse-daemon": "workspace:*",
     "tsup": "^8.3.5",
     "typescript": "^5.6.3"
   },
   "keywords": ["claude", "claude-code", "analytics", "monitoring", "dashboard", "tokens", "telemetry"],
-  "license": "MIT"
+  "license": "MIT",
+  "author": "omartoma",
+  "engines": {
+    "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/omar-toma/ccpulse.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/omar-toma/ccpulse#readme",
+  "bugs": {
+    "url": "https://github.com/omar-toma/ccpulse/issues"
+  }
 }
