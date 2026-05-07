@@ -56,7 +56,7 @@ export const api = {
   sessions: (cwd: string) => get<SessionSummary[]>(`/api/projects/${encodeURIComponent(cwd)}/sessions`),
   projectTools: (cwd: string) => get<ToolBucket[]>(`/api/projects/${encodeURIComponent(cwd)}/tools`),
   projectModels: (cwd: string) => get<ModelBucket[]>(`/api/projects/${encodeURIComponent(cwd)}/models`),
-  session: (id: string) => get<{ session: { id: string; title: string | null; cwd: string | null; branch: string | null }; events: any[]; gaps: any[] }>(`/api/sessions/${id}`),
+  session: (id: string) => get<{ session: { id: string; title: string | null; cwd: string | null; branch: string | null; projectRoot: string | null }; events: any[]; gaps: any[] }>(`/api/sessions/${id}`),
   sessionTools: (id: string) => get<ToolBucket[]>(`/api/sessions/${id}/tools`),
   event: (uuid: string) => get<any>(`/api/events/${uuid}`),
 };

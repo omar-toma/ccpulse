@@ -22,9 +22,9 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm build               # must run before typecheck — vite plugin generates packages/web/src/routeTree.gen.ts
       - run: pnpm -r typecheck
       - run: pnpm -r test
-      - run: pnpm build
       - name: Pack and smoke install
         working-directory: packages/cli
         run: |
