@@ -9,13 +9,25 @@ Live, local-first analytics for [Claude Code](https://claude.com/claude-code) se
 ## Quickstart
 
 ```bash
-npx ccpulse daemon                       # in one terminal
-cd /your/project && npx ccpulse open     # in another
+npx @omartoma/ccpulse                    # starts daemon + opens dashboard
 ```
 
-The daemon watches `~/.claude/projects/`, indexes events into SQLite, and serves a dashboard at `http://localhost:7878`. The browser opens scoped to the cwd you ran `open` from.
+Or install globally:
 
-Other commands: `npx ccpulse status`, `npx ccpulse reindex`.
+```bash
+npm i -g @omartoma/ccpulse
+ccpulse                                  # same thing
+```
+
+The daemon watches `~/.claude/projects/`, indexes events into SQLite, and serves a dashboard at `http://localhost:7878`. To scope the dashboard to a specific project's cwd, run `npx @omartoma/ccpulse open` from that directory while the daemon is running.
+
+Other commands:
+
+```bash
+npx @omartoma/ccpulse daemon --no-open   # daemon without auto-opening browser
+npx @omartoma/ccpulse status             # check daemon health
+npx @omartoma/ccpulse reindex            # drop SQLite index, rebuild on next start
+```
 
 ## What it shows
 

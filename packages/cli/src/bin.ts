@@ -22,11 +22,16 @@ function parseFlag(name: string): string | undefined {
 
 async function runDaemon() {
   const port = Number(parseFlag('port')) || DEFAULT_PORT;
+  const noOpen = args.includes('--no-open');
   const server = createServer({ port, dbPath: DB_PATH });
   const { port: actualPort } = await server.start();
-  console.log(`ccpulse daemon listening on http://localhost:${actualPort}`);
-  console.log(`open dashboard:    ccpulse open`);
+  const url = `http://localhost:${actualPort}`;
+  console.log(`ccpulse daemon listening on ${url}`);
   console.log(`db:                ${DB_PATH}`);
+  if (!noOpen) {
+    openInBrowser(url);
+    console.log(`opened ${url}`);
+  }
   let shuttingDown = false;
   const shutdown = async (sig: NodeJS.Signals) => {
     if (shuttingDown) { process.exit(1); return; }
@@ -97,7 +102,8 @@ function help() {
   console.log(`ccpulse — real-time analytics for Claude Code sessions
 
 usage:
-  ccpulse daemon [--port N]      start the daemon (foreground)
+  ccpulse                        start daemon and open dashboard (default)
+  ccpulse daemon [--port N] [--no-open]  start the daemon (foreground)
   ccpulse open [--project PATH]  open dashboard in browser, scoped to project
   ccpulse status                 check daemon health
   ccpulse reindex                drop SQLite index, rebuild on next daemon start
@@ -111,6 +117,7 @@ env:
 
 async function main() {
   switch (cmd) {
+    case undefined:
     case 'daemon': await runDaemon(); break;
     case 'open':   await runOpen();   break;
     case 'status': await runStatus(); break;
@@ -118,7 +125,6 @@ async function main() {
     case '--help':
     case '-h':
     case 'help':
-    case undefined:
       help(); break;
     default:
       console.error(`unknown command: ${cmd}`);

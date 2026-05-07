@@ -7,7 +7,13 @@ a REST + SSE API consumed by an embedded React SPA.
 ## Install
 
 ```bash
-npm install -g ccpulse
+npm install -g @omartoma/ccpulse
+```
+
+Or run without installing:
+
+```bash
+npx @omartoma/ccpulse
 ```
 
 Requires Node 22 or later. No native compilation needed (uses `node:sqlite`).
@@ -15,10 +21,11 @@ Requires Node 22 or later. No native compilation needed (uses `node:sqlite`).
 ## Usage
 
 ```bash
-ccpulse daemon          # start the server (default port 7878)
-ccpulse open            # open the dashboard in your browser, scoped to $PWD
+ccpulse                  # start daemon and open dashboard (default)
+ccpulse daemon           # start the server, opens browser; add --no-open to suppress
+ccpulse open             # open the dashboard scoped to $PWD (daemon must be running)
 ccpulse status
-ccpulse reindex         # drop the SQLite index; rebuild on next daemon start
+ccpulse reindex          # drop the SQLite index; rebuild on next daemon start
 ```
 
 ## Environment
