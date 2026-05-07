@@ -13,7 +13,7 @@ npm install -g @omartoma/ccpulse
 Or run without installing:
 
 ```bash
-npx @omartoma/ccpulse
+npx @omartoma/ccpulse@latest
 ```
 
 Requires Node 22 or later. No native compilation needed (uses `node:sqlite`).
