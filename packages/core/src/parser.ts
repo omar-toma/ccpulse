@@ -99,6 +99,7 @@ export function parseLine(raw: string): ParsedLine {
     toolUseId,
     toolResultForId,
     aiTitle: null,
+    requestId: obj.requestId ?? null,
   };
 
   return { event, toolCalls, toolResults, aiTitle: null };

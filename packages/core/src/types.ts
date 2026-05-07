@@ -45,6 +45,7 @@ export interface RawJsonlEvent {
   isSidechain?: boolean;
   message?: AnthropicMessage;
   aiTitle?: string;
+  requestId?: string;
   // system event extras
   subtype?: string;
   hookCount?: number;
@@ -73,6 +74,7 @@ export interface NormalizedEvent {
   toolUseId: string | null;
   toolResultForId: string | null;
   aiTitle: string | null;
+  requestId: string | null;
 }
 
 export interface ProjectSummary {

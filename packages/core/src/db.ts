@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS events (
   cache_create INTEGER NOT NULL DEFAULT 0,
   tool_name TEXT,
   tool_use_id TEXT,
-  tool_result_for_id TEXT
+  tool_result_for_id TEXT,
+  request_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_events_session_ts ON events(session_id, ts);
 CREATE INDEX IF NOT EXISTS idx_events_cwd ON events(cwd);
@@ -86,7 +87,15 @@ export function openDb(path: string): DB {
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA synchronous = NORMAL');
   db.exec(SCHEMA);
+  migrate(db);
   return db;
+}
+
+/** Idempotent migrations for tables created before a schema change. */
+function migrate(db: DB) {
+  const cols = db.prepare(`PRAGMA table_info(events)`).all() as Array<{ name: string }>;
+  const has = (n: string) => cols.some((c) => c.name === n);
+  if (!has('request_id')) db.exec(`ALTER TABLE events ADD COLUMN request_id TEXT`);
 }
 
 export function withTransaction<T>(db: DB, fn: () => T): T {

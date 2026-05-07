@@ -29,10 +29,10 @@ export class Indexer {
     this.upsertEvent = db.prepare(`
       INSERT INTO events (uuid, session_id, parent_uuid, type, role, ts, cwd, git_branch, version,
                           is_sidechain, model, input_tokens, output_tokens, cache_read, cache_create,
-                          tool_name, tool_use_id, tool_result_for_id)
+                          tool_name, tool_use_id, tool_result_for_id, request_id)
       VALUES (@uuid, @sessionId, @parentUuid, @type, @role, @ts, @cwd, @gitBranch, @version,
               @isSidechain, @model, @inputTokens, @outputTokens, @cacheRead, @cacheCreate,
-              @toolName, @toolUseId, @toolResultForId)
+              @toolName, @toolUseId, @toolResultForId, @requestId)
       ON CONFLICT(uuid) DO NOTHING
     `);
     this.upsertEvent.setAllowUnknownNamedParameters(true);
@@ -114,37 +114,27 @@ export class Indexer {
     if (!parsed.length) return;
 
     // Dedupe duplicate-usage assistant events. Claude Code can split one API turn into
-    // multiple assistant events (e.g. thinking on one event, tool_use on the next) and
-    // stamp ALL of them with the same `usage` block. Only the first should carry the
-    // tokens; the rest are zeroed so aggregates and per-event tokens don't double-count.
-    const byUuid = new Map<string, any>();
-    for (const p of parsed) if (p.event) byUuid.set(p.event.uuid, p.event);
-    const lookupParentUsage = this.db.prepare(
-      'SELECT role, input_tokens, output_tokens, cache_read, cache_create FROM events WHERE uuid = ?',
+    // multiple assistant events (e.g. thinking → tool_use → tool_use) and stamp ALL of
+    // them with the same `usage` block. They share a `requestId`, so we keep the usage
+    // on the FIRST event seen for a given requestId and zero it on every other one.
+    const seenReq = new Set<string>();
+    // Pre-populate with requestIds already present in the DB carrying non-zero usage,
+    // so a second batch never re-attributes tokens to a new event for the same turn.
+    const lookupReq = this.db.prepare(
+      'SELECT 1 FROM events WHERE request_id = ? AND (input_tokens > 0 OR output_tokens > 0 OR cache_read > 0 OR cache_create > 0) LIMIT 1',
     );
     for (const p of parsed) {
       const e = p.event;
-      if (!e || e.role !== 'assistant' || !e.parentUuid) continue;
-      let parent: { role: string | null; inputTokens: number; outputTokens: number; cacheRead: number; cacheCreate: number } | null =
-        byUuid.get(e.parentUuid) ?? null;
-      if (!parent) {
-        const r = lookupParentUsage.get(e.parentUuid) as
-          | { role: string | null; input_tokens: number; output_tokens: number; cache_read: number; cache_create: number }
-          | undefined;
-        if (r) parent = { role: r.role, inputTokens: r.input_tokens, outputTokens: r.output_tokens, cacheRead: r.cache_read, cacheCreate: r.cache_create };
-      }
-      if (!parent || parent.role !== 'assistant') continue;
-      const sameUsage =
-        parent.inputTokens === e.inputTokens &&
-        parent.outputTokens === e.outputTokens &&
-        parent.cacheRead === e.cacheRead &&
-        parent.cacheCreate === e.cacheCreate;
+      if (!e || e.role !== 'assistant' || !e.requestId) continue;
       const hasUsage = !!(e.inputTokens || e.outputTokens || e.cacheRead || e.cacheCreate);
-      if (sameUsage && hasUsage) {
+      if (!hasUsage) continue;
+      if (seenReq.has(e.requestId) || lookupReq.get(e.requestId)) {
         e.inputTokens = 0;
         e.outputTokens = 0;
         e.cacheRead = 0;
         e.cacheCreate = 0;
+      } else {
+        seenReq.add(e.requestId);
       }
     }
 
