@@ -1,6 +1,6 @@
 {
   "name": "@omartoma/ccpulse",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Real-time analytics dashboard for Claude Code sessions",
   "type": "module",
   "bin": {
@@ -10,7 +10,7 @@
   "scripts": {
     "build": "tsup src/bin.ts --format esm --clean --target node22 --external chokidar",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "cd ../.. && pnpm build"
+    "prepublishOnly": "cd ../.. && pnpm build && cp README.md packages/cli/README.md"
   },
   "dependencies": {
     "chokidar": "^4.0.1"

@@ -31,6 +31,8 @@ jobs:
             exit 1
           fi
       - run: pnpm build
+      - name: Sync root README into cli package
+        run: cp README.md packages/cli/README.md
       - name: Publish (Trusted Publishing via OIDC)
         working-directory: packages/cli
         run: npm publish --provenance --access public
