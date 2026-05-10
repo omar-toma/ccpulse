@@ -35,6 +35,11 @@ export class Indexer {
               @toolName, @toolUseId, @toolResultForId, @requestId)
       ON CONFLICT(uuid) DO NOTHING
     `);
+    if (typeof (this.upsertEvent as { setAllowUnknownNamedParameters?: (v: boolean) => void }).setAllowUnknownNamedParameters !== 'function') {
+      throw new Error(
+        `node:sqlite StatementSync.setAllowUnknownNamedParameters missing — needs Node >= 22.5.0. Current: ${process.version}`,
+      );
+    }
     this.upsertEvent.setAllowUnknownNamedParameters(true);
     this.upsertToolCall = db.prepare(`
       INSERT INTO tool_calls (tool_use_id, session_id, event_uuid, ts, name, input_json)

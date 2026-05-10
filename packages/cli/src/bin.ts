@@ -118,8 +118,14 @@ function runReindex() {
 }
 
 function openInBrowser(url: string) {
-  const cmd = platform() === 'darwin' ? 'open' : platform() === 'win32' ? 'start' : 'xdg-open';
-  spawn(cmd, [url], { detached: true, stdio: 'ignore' }).unref();
+  const p = platform();
+  const child = p === 'win32'
+    ? spawn('cmd', ['/c', 'start', '""', url], { detached: true, stdio: 'ignore' })
+    : spawn(p === 'darwin' ? 'open' : 'xdg-open', [url], { detached: true, stdio: 'ignore' });
+  child.on('error', (err) => {
+    console.warn(`could not open browser: ${(err as Error).message}`);
+  });
+  child.unref();
 }
 
 /**
