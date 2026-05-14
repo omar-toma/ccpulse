@@ -1,6 +1,6 @@
 {
   "name": "@omartoma/ccpulse",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Real-time analytics dashboard for Claude Code sessions",
   "type": "module",
   "bin": {

@@ -32,5 +32,5 @@ jobs:
           mkdir /tmp/ccpulse-smoke
           cd /tmp/ccpulse-smoke
           npm init -y
-          npm install "$GITHUB_WORKSPACE"/packages/cli/ccpulse-*.tgz
+          npm install "$GITHUB_WORKSPACE"/packages/cli/omartoma-ccpulse-*.tgz
           ./node_modules/.bin/ccpulse --version || true
