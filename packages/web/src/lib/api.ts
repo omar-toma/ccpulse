@@ -51,6 +51,14 @@ async function get<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+export interface ContentMatch {
+  sessionId: string;
+  cwd: string | null;
+  snippet: string;
+  matchCount: number;
+  lastTs: number;
+}
+
 export const api = {
   projects: () => get<ProjectSummary[]>('/api/projects'),
   sessions: (cwd: string) => get<SessionSummary[]>(`/api/projects/${encodeURIComponent(cwd)}/sessions`),
@@ -59,4 +67,8 @@ export const api = {
   session: (id: string) => get<{ session: { id: string; title: string | null; cwd: string | null; branch: string | null; projectRoot: string | null }; events: any[]; gaps: any[] }>(`/api/sessions/${id}`),
   sessionTools: (id: string) => get<ToolBucket[]>(`/api/sessions/${id}/tools`),
   event: (uuid: string) => get<any>(`/api/events/${uuid}`),
+  searchProjectSessions: (cwd: string, q: string) =>
+    get<ContentMatch[]>(`/api/projects/${encodeURIComponent(cwd)}/sessions/search?q=${encodeURIComponent(q)}`),
+  searchAllSessions: (q: string) =>
+    get<ContentMatch[]>(`/api/sessions/search?q=${encodeURIComponent(q)}`),
 };

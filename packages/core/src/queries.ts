@@ -239,8 +239,27 @@ export class Queries {
       FROM events WHERE session_id = ? ORDER BY ts ASC
     `).all(sessionId) as Array<any>;
 
+    // Batch-fetch tool_calls.input_json for any tool_use or tool_result event so we can
+    // expose a search-friendly flattened text on each row.
+    const toolIds = new Set<string>();
+    for (const e of rows) {
+      if (e.tool_use_id) toolIds.add(e.tool_use_id);
+      if (e.tool_result_for_id) toolIds.add(e.tool_result_for_id);
+    }
+    const toolInputByUseId = new Map<string, string>();
+    if (toolIds.size > 0) {
+      const ids = [...toolIds];
+      const ph = ids.map(() => '?').join(',');
+      const trows = this.db.prepare(
+        `SELECT tool_use_id, input_json FROM tool_calls WHERE tool_use_id IN (${ph})`,
+      ).all(...ids) as Array<{ tool_use_id: string; input_json: string }>;
+      for (const tr of trows) toolInputByUseId.set(tr.tool_use_id, tr.input_json);
+    }
+
     const events = rows.map((e) => {
       const raw = readRawJsonlByUuid(e.session_id ?? sessionId, e.uuid);
+      const tid = e.tool_use_id ?? e.tool_result_for_id;
+      const rawInput = tid ? toolInputByUseId.get(tid) : undefined;
       return {
         ...e,
         cost: costOf(e.model, {
@@ -251,6 +270,7 @@ export class Queries {
         }),
         summary: extractEventSummary(raw, e),
         hasThinking: hasThinkingBlock(raw),
+        toolInputText: rawInput ? flattenJsonForSearch(rawInput, 500) : null,
       };
     });
 
@@ -343,6 +363,74 @@ export class Queries {
     }));
   }
 
+  /**
+   * Search event summaries across sessions. Reads raw JSONL files, derives summary text
+   * via extractEventSummary, performs case-insensitive substring match. Optionally scoped
+   * to a project cwd. Returns one result per session (the first matching snippet).
+   */
+  searchEventSummaries(
+    q: string,
+    opts: { cwd?: string; limit?: number } = {},
+  ): Array<{ sessionId: string; cwd: string | null; snippet: string; matchCount: number; lastTs: number }> {
+    const query = q.trim().toLowerCase();
+    if (query.length < 2) return [];
+    const limit = opts.limit ?? 100;
+
+    let sessionIds: string[];
+    if (opts.cwd) {
+      sessionIds = this.sessionsForRoot(opts.cwd);
+    } else {
+      const { roots } = this.buildRootIndex();
+      sessionIds = [...roots.keys()];
+    }
+    if (!sessionIds.length) return [];
+
+    // Order by recency so top results surface first when we hit the limit.
+    const lastTsRows = this.db.prepare(`
+      SELECT session_id, MAX(ts) as last_ts FROM events
+      WHERE session_id IN (${sessionIds.map(() => '?').join(',')})
+      GROUP BY session_id
+    `).all(...sessionIds) as Array<{ session_id: string; last_ts: number }>;
+    const lastTsMap = new Map(lastTsRows.map((r) => [r.session_id, r.last_ts]));
+    sessionIds.sort((a, b) => (lastTsMap.get(b) ?? 0) - (lastTsMap.get(a) ?? 0));
+
+    const out: Array<{ sessionId: string; cwd: string | null; snippet: string; matchCount: number; lastTs: number }> = [];
+
+    for (const sid of sessionIds) {
+      if (out.length >= limit) break;
+      const path = findJsonlPath(sid);
+      if (!path) continue;
+      const entry = loadJsonlCache(path);
+      if (!entry) continue;
+
+      let matchCount = 0;
+      let snippet: string | null = null;
+      for (const raw of entry.byUuid.values()) {
+        const role = raw.message?.role ?? raw.role ?? null;
+        const toolName = Array.isArray(raw.message?.content)
+          ? (raw.message.content.find((b: any) => b?.type === 'tool_use')?.name ?? null)
+          : null;
+        const summary = extractEventSummary(raw, { type: raw.type, tool_name: toolName, role });
+        if (!summary) continue;
+        if (summary.toLowerCase().includes(query)) {
+          matchCount++;
+          if (!snippet) snippet = summary;
+        }
+      }
+
+      if (matchCount > 0) {
+        out.push({
+          sessionId: sid,
+          cwd: this.rootForSession(sid),
+          snippet: snippet ?? '',
+          matchCount,
+          lastTs: lastTsMap.get(sid) ?? 0,
+        });
+      }
+    }
+    return out;
+  }
+
   totals(): { eventCount: number; sessionCount: number; projectCount: number } {
     const e = this.db.prepare('SELECT COUNT(*) as c FROM events').get() as { c: number };
     const s = this.db.prepare('SELECT COUNT(*) as c FROM sessions').get() as { c: number };
@@ -376,9 +464,7 @@ function findJsonlPath(sessionId: string): string | null {
   return null;
 }
 
-export function readRawJsonlByUuid(sessionId: string, uuid: string): any | null {
-  const path = findJsonlPath(sessionId);
-  if (!path) return null;
+function loadJsonlCache(path: string): JsonlCacheEntry | null {
   let mtimeMs: number;
   try { mtimeMs = statSync(path).mtimeMs; } catch { return null; }
 
@@ -389,7 +475,6 @@ export function readRawJsonlByUuid(sessionId: string, uuid: string): any | null 
     const byUuid = new Map<string, any>();
     for (const line of text.split('\n')) {
       if (!line) continue;
-      // cheap pre-filter: only attempt parse if uuid string appears
       if (!line.includes('"uuid"')) continue;
       try {
         const o = JSON.parse(line);
@@ -403,7 +488,14 @@ export function readRawJsonlByUuid(sessionId: string, uuid: string): any | null 
     }
     jsonlCache.set(path, entry);
   }
-  return entry.byUuid.get(uuid) ?? null;
+  return entry;
+}
+
+export function readRawJsonlByUuid(sessionId: string, uuid: string): any | null {
+  const path = findJsonlPath(sessionId);
+  if (!path) return null;
+  const entry = loadJsonlCache(path);
+  return entry?.byUuid.get(uuid) ?? null;
 }
 
 const SUMMARY_MAX = 220;
@@ -456,6 +548,28 @@ function clip(s: string): string {
   const trimmed = s.replace(/\s+/g, ' ').trim();
   if (trimmed.length <= SUMMARY_MAX) return trimmed;
   return trimmed.slice(0, SUMMARY_MAX) + '…';
+}
+
+/**
+ * Flatten a JSON string into a values-only, space-joined text blob for fuzzy search.
+ * Strips keys to avoid false positives on field names like "command" or "file_path".
+ * Caps total length to `maxLen` to bound fuse.js index size.
+ */
+function flattenJsonForSearch(jsonText: string, maxLen: number): string | null {
+  let parsed: unknown;
+  try { parsed = JSON.parse(jsonText); } catch { return jsonText.slice(0, maxLen); }
+  const parts: string[] = [];
+  const walk = (v: unknown) => {
+    if (v == null) return;
+    if (typeof v === 'string') { parts.push(v); return; }
+    if (typeof v === 'number' || typeof v === 'boolean') { parts.push(String(v)); return; }
+    if (Array.isArray(v)) { for (const x of v) walk(x); return; }
+    if (typeof v === 'object') { for (const x of Object.values(v as object)) walk(x); }
+  };
+  walk(parsed);
+  const out = parts.join(' ').replace(/\s+/g, ' ').trim();
+  if (!out) return null;
+  return out.length > maxLen ? out.slice(0, maxLen) : out;
 }
 
 /* ---------------------------------------------------------------------------

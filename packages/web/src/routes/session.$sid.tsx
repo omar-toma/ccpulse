@@ -1,8 +1,12 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
+import Fuse from 'fuse.js';
 import { api } from '../lib/api';
-import { Card, CardHeader, EmptyState, Skeleton, Stat, fmtTokens, fmtMs, fmtDuration } from './index';
+import { Card, CardHeader, EmptyState, SearchInput, Skeleton, Stat, fmtTokens, fmtMs, fmtDuration } from './index';
+import { rankResults, useDebounced } from '../lib/search';
+
+const TIMELINE_FUZZY_CAP = 2000;
 
 export const Route = createFileRoute('/session/$sid')({
   component: SessionView,
@@ -75,16 +79,54 @@ function SessionView() {
   const [sortDir, setSortDir] = usePersistedState<SortDir>('ccpulse:timeline:sortDir', 'desc');
   const [enabled, setEnabled] = usePersistedKindSet('ccpulse:timeline:kinds', new Set(KINDS));
   const [openUuid, setOpenUuid] = useState<string | null>(null);
+  const [timelineQuery, setTimelineQuery] = useState('');
+  const debouncedTimelineQuery = useDebounced(timelineQuery, 200);
+  const trimmedTimelineQ = debouncedTimelineQuery.trim();
+
+  // Cap fuse input at the most-recent TIMELINE_FUZZY_CAP events; events are sorted ts ASC,
+  // so the tail is most recent.
+  const fuseEvents = useMemo(() => {
+    if (events.length <= TIMELINE_FUZZY_CAP) return events;
+    return events.slice(events.length - TIMELINE_FUZZY_CAP);
+  }, [events]);
+
+  const fuse = useMemo(() => new Fuse(fuseEvents, {
+    keys: [
+      { name: 'summary', weight: 0.5 },
+      { name: 'tool_name', weight: 0.3 },
+      { name: 'toolInputText', weight: 0.2 },
+    ],
+    threshold: 0.4,
+    includeScore: true,
+    ignoreLocation: true,
+    minMatchCharLength: 2,
+  }), [fuseEvents]);
 
   const visibleEvents = useMemo(() => {
-    const filtered = events.filter((e: any) => enabled.has(eventKind(e)));
+    // Apply text search first (if any), then kind filter, then sort.
+    let base: any[];
+    if (trimmedTimelineQ.length >= 2) {
+      const hits = fuse.search(trimmedTimelineQ);
+      base = rankResults(
+        hits,
+        (e) => e.ts,
+        (e) => (e.input_tokens ?? 0) + (e.output_tokens ?? 0),
+      );
+    } else {
+      base = events;
+    }
+    const filtered = base.filter((e: any) => enabled.has(eventKind(e)));
+    // When searching, keep match-rank order; otherwise apply sort.
+    if (trimmedTimelineQ.length >= 2) return filtered;
     const cmp = (a: any, b: any) => {
       const av = sortValue(a, sortBy);
       const bv = sortValue(b, sortBy);
       return sortDir === 'asc' ? av - bv : bv - av;
     };
     return filtered.slice().sort(cmp);
-  }, [events, enabled, sortBy, sortDir]);
+  }, [events, fuse, trimmedTimelineQ, enabled, sortBy, sortDir]);
+
+  const isSearching = trimmedTimelineQ.length >= 2;
 
   const toggleSort = (col: SortBy) => {
     if (sortBy === col) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
@@ -167,7 +209,26 @@ function SessionView() {
       </div>
 
       <Card>
-        <CardHeader title="Timeline" hint={`${visibleEvents.length} of ${events.length} events`} />
+        <CardHeader
+          title="Timeline"
+          hint={
+            isSearching
+              ? `${visibleEvents.length} matches in last ${fuseEvents.length}`
+              : `${visibleEvents.length} of ${events.length} events`
+          }
+        />
+
+        <div className="mb-3">
+          <SearchInput
+            value={timelineQuery}
+            onChange={setTimelineQuery}
+            placeholder={
+              events.length > TIMELINE_FUZZY_CAP
+                ? `Search last ${TIMELINE_FUZZY_CAP} events…`
+                : 'Search event content…'
+            }
+          />
+        </div>
 
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <span className="text-[10px] uppercase tracking-[0.14em] text-ink-500 font-medium pr-1">Filter:</span>

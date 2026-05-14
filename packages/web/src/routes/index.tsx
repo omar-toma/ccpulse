@@ -1,19 +1,23 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
-import { api, type ProjectSummary } from '../lib/api';
+import { useMemo, useState } from 'react';
+import Fuse from 'fuse.js';
+import { api, type ContentMatch, type ProjectSummary, type SessionSummary } from '../lib/api';
+import { rankResults, useDebounced } from '../lib/search';
 
-interface IndexSearch { project?: string }
+interface IndexSearch { project?: string; q?: string }
 
 export const Route = createFileRoute('/')({
   validateSearch: (s: Record<string, unknown>): IndexSearch => ({
     project: typeof s.project === 'string' ? s.project : undefined,
+    q: typeof s.q === 'string' ? s.q : undefined,
   }),
   component: Dashboard,
 });
 
 function Dashboard() {
-  const { project } = Route.useSearch();
-  return project ? <ProjectView cwd={project} /> : <ProjectsList />;
+  const { project, q } = Route.useSearch();
+  return project ? <ProjectView cwd={project} initialQuery={q ?? ''} /> : <ProjectsList />;
 }
 
 /* ============================================================================
@@ -27,6 +31,60 @@ function ProjectsList() {
   const maxCost = Math.max(0.01, ...data.map((p) => p.estimatedCost));
   const totalTokens = data.reduce((s, p) => s + p.totalInputTokens + p.totalOutputTokens, 0);
   const totalSessions = data.reduce((s, p) => s + p.sessionCount, 0);
+
+  const [query, setQuery] = useState('');
+  const debouncedQuery = useDebounced(query, 200);
+  const trimmed = debouncedQuery.trim();
+
+  const contentMatches = useQuery({
+    queryKey: ['globalContentSearch', trimmed],
+    queryFn: () => api.searchAllSessions(trimmed),
+    enabled: trimmed.length >= 2,
+    staleTime: 30_000,
+  });
+
+  // Aggregate content hits by project cwd
+  const projectHits = useMemo(() => {
+    const m = new Map<string, { sessions: number; snippet: string }>();
+    for (const hit of contentMatches.data ?? []) {
+      if (!hit.cwd) continue;
+      const existing = m.get(hit.cwd);
+      if (existing) existing.sessions++;
+      else m.set(hit.cwd, { sessions: 1, snippet: hit.snippet });
+    }
+    return m;
+  }, [contentMatches.data]);
+
+  const projectIndex = useMemo(() => {
+    const augmented = data.map((p) => ({
+      ...p,
+      _segment: tailPath(p.cwd),
+    }));
+    return {
+      items: augmented,
+      fuse: new Fuse(augmented, {
+        keys: [
+          { name: '_segment', weight: 0.6 },
+          { name: 'cwd', weight: 0.4 },
+        ],
+        threshold: 0.4,
+        includeScore: true,
+        ignoreLocation: true,
+      }),
+    };
+  }, [data]);
+
+  const filtered = useMemo(() => {
+    if (!trimmed) return data;
+    const metaHits = projectIndex.fuse.search(trimmed);
+    const ranked = rankResults(metaHits, (p) => p.lastActive, (p) => p.estimatedCost);
+    // Merge: include projects with content hits that aren't already in meta results
+    const seen = new Set(ranked.map((p) => p.cwd));
+    const contentOnly = projectIndex.items.filter(
+      (p) => projectHits.has(p.cwd) && !seen.has(p.cwd),
+    );
+    return [...ranked, ...contentOnly];
+  }, [trimmed, data, projectIndex, projectHits]);
 
   return (
     <div className="space-y-8">
@@ -43,7 +101,18 @@ function ProjectsList() {
         <Stat label="Sessions" value={String(totalSessions)} sub="indexed" />
       </div>
 
-      <Section title="Projects" hint={data.length ? `${data.length} tracked` : ''}>
+      <Section
+        title="Projects"
+        hint={trimmed ? `${filtered.length} of ${data.length}` : (data.length ? `${data.length} tracked` : '')}
+      >
+        <div className="px-4 py-3 border-b border-ink-300 bg-ink-100/40">
+          <SearchInput
+            value={query}
+            onChange={setQuery}
+            placeholder="Search projects, branches, event content…"
+            loading={contentMatches.isFetching && trimmed.length >= 2}
+          />
+        </div>
         {projects.isLoading && <Skeleton rows={5} />}
         {!projects.isLoading && data.length === 0 && (
           <EmptyState
@@ -51,9 +120,18 @@ function ProjectsList() {
             body="Use Claude Code in any project, then refresh."
           />
         )}
+        {!projects.isLoading && data.length > 0 && filtered.length === 0 && (
+          <EmptyState title="No projects match" body={`Nothing matched "${trimmed}".`} compact />
+        )}
         <ul className="divide-y divide-ink-300">
-          {data.map((p) => (
-            <ProjectRow key={p.cwd} p={p} maxCost={maxCost} />
+          {filtered.map((p) => (
+            <ProjectRow
+              key={p.cwd}
+              p={p}
+              maxCost={maxCost}
+              contentHit={projectHits.get(p.cwd) ?? null}
+              query={trimmed}
+            />
           ))}
         </ul>
       </Section>
@@ -61,11 +139,22 @@ function ProjectsList() {
   );
 }
 
-function ProjectRow({ p, maxCost }: { p: ProjectSummary; maxCost: number }) {
+function ProjectRow({
+  p, maxCost, contentHit, query,
+}: {
+  p: ProjectSummary;
+  maxCost: number;
+  contentHit?: { sessions: number; snippet: string } | null;
+  query?: string;
+}) {
   const share = Math.min(1, p.estimatedCost / maxCost);
   return (
     <li className="relative">
-      <Link to="/" search={{ project: p.cwd }} className="block group">
+      <Link
+        to="/"
+        search={query ? { project: p.cwd, q: query } : { project: p.cwd }}
+        className="block group"
+      >
         <div className="absolute inset-y-0 left-0 bg-pulse/[0.05] group-hover:bg-pulse/10 transition-colors" style={{ width: `${share * 100}%` }} />
         <div className="relative px-4 py-3 grid grid-cols-12 gap-4 items-center">
           <div className="col-span-7 min-w-0">
@@ -75,7 +164,17 @@ function ProjectRow({ p, maxCost }: { p: ProjectSummary; maxCost: number }) {
             </div>
             <div className="text-[11px] text-ink-500 mt-0.5 font-mono">
               {p.sessionCount} session{p.sessionCount === 1 ? '' : 's'}  ·  last active {fmtRel(p.lastActive)}
+              {contentHit && (
+                <span className="ml-2 px-1.5 py-0.5 rounded bg-pulse/15 text-pulse-glow text-[10px]">
+                  {contentHit.sessions} matching session{contentHit.sessions === 1 ? '' : 's'}
+                </span>
+              )}
             </div>
+            {contentHit?.snippet && (
+              <div className="text-[11px] text-ink-500 italic mt-1 truncate font-sans">
+                “{contentHit.snippet}”
+              </div>
+            )}
           </div>
           <div className="col-span-2 text-right font-mono text-[12px] text-ink-600">
             {fmtTokens(p.totalInputTokens + p.totalOutputTokens)} <span className="text-ink-500">tok</span>
@@ -92,11 +191,44 @@ function ProjectRow({ p, maxCost }: { p: ProjectSummary; maxCost: number }) {
   );
 }
 
+export function SearchInput({
+  value, onChange, placeholder, loading,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+  loading?: boolean;
+}) {
+  return (
+    <div className="relative">
+      <input
+        type="search"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="w-full bg-ink-0 border border-ink-300 rounded px-3 py-1.5 pr-16 text-[13px] text-ink-800 placeholder:text-ink-500 font-mono focus:outline-none focus:border-pulse/60 focus:ring-1 focus:ring-pulse/30"
+      />
+      <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1.5">
+        {loading && <span className="text-[10px] text-ink-500 font-mono">…</span>}
+        {value && (
+          <button
+            onClick={() => onChange('')}
+            className="text-ink-500 hover:text-ink-800 text-[14px] leading-none px-1"
+            aria-label="clear search"
+          >
+            ×
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ============================================================================
    PROJECT DRILLDOWN
 ============================================================================ */
 
-function ProjectView({ cwd }: { cwd: string }) {
+function ProjectView({ cwd, initialQuery = '' }: { cwd: string; initialQuery?: string }) {
   const projects = useQuery({ queryKey: ['projects'], queryFn: api.projects });
   const sessions = useQuery({ queryKey: ['sessions', cwd], queryFn: () => api.sessions(cwd) });
   const tools = useQuery({ queryKey: ['projectTools', cwd], queryFn: () => api.projectTools(cwd) });
@@ -107,6 +239,51 @@ function ProjectView({ cwd }: { cwd: string }) {
   const totalCacheRead = proj?.totalCacheRead ?? 0;
   const totalCost = proj?.estimatedCost ?? 0;
   const toolCallTotal = (tools.data ?? []).reduce((s, t) => s + t.count, 0);
+
+  const [sessionQuery, setSessionQuery] = useState(initialQuery);
+  const debouncedSessionQuery = useDebounced(sessionQuery, 200);
+  const trimmedSessionQ = debouncedSessionQuery.trim();
+
+  const contentMatches = useQuery({
+    queryKey: ['projectContentSearch', cwd, trimmedSessionQ],
+    queryFn: () => api.searchProjectSessions(cwd, trimmedSessionQ),
+    enabled: trimmedSessionQ.length >= 2,
+    staleTime: 30_000,
+  });
+
+  const sessionIndex = useMemo(() => {
+    const list = sessions.data ?? [];
+    return new Fuse(list, {
+      keys: [
+        { name: 'title', weight: 0.5 },
+        { name: 'branch', weight: 0.3 },
+        { name: 'id', weight: 0.2 },
+      ],
+      threshold: 0.4,
+      includeScore: true,
+      ignoreLocation: true,
+    });
+  }, [sessions.data]);
+
+  const sessionMatches: Array<SessionSummary & { _snippet?: string; _matchCount?: number }> = useMemo(() => {
+    const list = sessions.data ?? [];
+    if (!trimmedSessionQ) return list;
+    const contentMap = new Map<string, ContentMatch>();
+    for (const m of contentMatches.data ?? []) contentMap.set(m.sessionId, m);
+
+    const metaHits = sessionIndex.search(trimmedSessionQ);
+    const metaRanked = rankResults(metaHits, (s) => s.endedAt, (s) => s.estimatedCost);
+    const seen = new Set(metaRanked.map((s) => s.id));
+
+    // Add content-only matches at the end
+    const contentOnly = list.filter((s) => contentMap.has(s.id) && !seen.has(s.id));
+    const ranked = [...metaRanked, ...contentOnly];
+
+    return ranked.map((s) => {
+      const hit = contentMap.get(s.id);
+      return hit ? { ...s, _snippet: hit.snippet, _matchCount: hit.matchCount } : s;
+    });
+  }, [sessions.data, sessionIndex, trimmedSessionQ, contentMatches.data]);
 
   return (
     <div className="space-y-8">
@@ -187,11 +364,27 @@ function ProjectView({ cwd }: { cwd: string }) {
       </div>
 
       <Card>
-        <CardHeader title="Sessions" hint={sessions.data ? `${sessions.data.length} total` : ''} />
+        <CardHeader
+          title="Sessions"
+          hint={trimmedSessionQ
+            ? `${sessionMatches.length} of ${sessions.data?.length ?? 0}`
+            : (sessions.data ? `${sessions.data.length} total` : '')}
+        />
+        <div className="mb-3">
+          <SearchInput
+            value={sessionQuery}
+            onChange={setSessionQuery}
+            placeholder="Search title, branch, id, or event content…"
+            loading={contentMatches.isFetching && trimmedSessionQ.length >= 2}
+          />
+        </div>
         {sessions.isLoading && <Skeleton rows={3} />}
         {sessions.data && sessions.data.length === 0 && <EmptyState title="No sessions" body="No Claude Code sessions touched this project yet." compact />}
+        {sessions.data && sessions.data.length > 0 && sessionMatches.length === 0 && (
+          <EmptyState title="No sessions match" body={`Nothing matched "${trimmedSessionQ}".`} compact />
+        )}
         <ul className="divide-y divide-ink-300">
-          {sessions.data?.map((s) => {
+          {sessionMatches.map((s) => {
             const dur = s.endedAt - s.startedAt;
             return (
               <li key={s.id}>
@@ -204,7 +397,17 @@ function ProjectView({ cwd }: { cwd: string }) {
                       <div className="text-[11px] text-ink-500 mt-0.5 font-mono">
                         {s.id.slice(0, 8)}  ·  {fmtRel(s.endedAt)}  ·  {fmtDuration(dur)}
                         {s.branch ? <span className="ml-2 px-1.5 py-0.5 rounded bg-ink-200 text-ink-700 text-[10px]">{s.branch}</span> : null}
+                        {s._matchCount ? (
+                          <span className="ml-2 px-1.5 py-0.5 rounded bg-pulse/15 text-pulse-glow text-[10px]">
+                            {s._matchCount} match{s._matchCount === 1 ? '' : 'es'}
+                          </span>
+                        ) : null}
                       </div>
+                      {s._snippet && (
+                        <div className="text-[11px] text-ink-500 italic mt-1 truncate font-sans">
+                          “{s._snippet}”
+                        </div>
+                      )}
                     </div>
                     <div className="col-span-2 text-right font-mono text-[11px] text-ink-500">
                       <span className="text-ink-700">{s.toolCallCount}</span> tools

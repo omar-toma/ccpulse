@@ -50,6 +50,17 @@ export function createServer(opts: ServerOptions = {}): Server {
     return c.json(queries.listSessions(cwd));
   });
 
+  app.get('/api/projects/:cwd/sessions/search', (c) => {
+    const cwd = decodeURIComponent(c.req.param('cwd'));
+    const q = c.req.query('q') ?? '';
+    return c.json(queries.searchEventSummaries(q, { cwd, limit: 100 }));
+  });
+
+  app.get('/api/sessions/search', (c) => {
+    const q = c.req.query('q') ?? '';
+    return c.json(queries.searchEventSummaries(q, { limit: 200 }));
+  });
+
   app.get('/api/projects/:cwd/tools', (c) => {
     const cwd = decodeURIComponent(c.req.param('cwd'));
     return c.json(queries.toolHistogram({ cwd }));
