@@ -71,7 +71,7 @@ Env: `CCPULSE_PORT` (default 7878), `CCPULSE_DB` (default `~/.ccpulse/ccpulse.db
 
 - JSONL is the source of truth. SQLite is a rebuildable index. Event UUIDs are unique; ingest is idempotent (`INSERT … ON CONFLICT(uuid) DO NOTHING`).
 - The watcher tracks per-file byte offsets in `file_offsets`, so a daemon restart only re-ingests new bytes. If the file rotates (inode changes or size shrinks) the offset resets to 0.
-- SSE pushes `ingest` events from the watcher's EventEmitter; the web client uses them only as cache-invalidation triggers, then refetches.
+- SSE pushes `ingest` events from the watcher's EventEmitter; the web client uses them only as cache-invalidation triggers, then refetches. The client-side subscription is toggleable — see "Live subscription is toggleable" below.
 
 ## Architecture notes that are not obvious from reading one file
 
@@ -86,6 +86,10 @@ Env: `CCPULSE_PORT` (default 7878), `CCPULSE_DB` (default `~/.ccpulse/ccpulse.db
 **Pricing is per-model, with prefix fallback.** `pricing.ts` has a static rate table for Claude 4.x models. Lookup tries exact match, then prefix match (so `claude-sonnet-4-6-foo` resolves to `claude-sonnet-4-6`), then `__default__`. Override at `~/.ccpulse/models.json`; the loader merges over defaults and caches forever (process restart to reload).
 
 **Cwd encoding.** Directories under `~/.claude/projects/` are encoded cwds with `/` replaced by `-`. The decode is lossy (real cwds with `-` collide), so the codebase always reads `cwd` from the event payload and uses the directory name only as a hint.
+
+**Live subscription is toggleable.** `web/src/lib/subscription.tsx` owns the single `EventSource('/api/stream')` in a `SubscriptionProvider` context (mounted in `main.tsx` between `QueryClientProvider` and `RouterProvider`). It exposes `{ status, lastIngest, enabled, toggle }`; the `LivePill` button in `__root.tsx` consumes it — clicking the pill flips `enabled`, which closes/reopens the socket. `enabled` persists in `localStorage` (`ccpulse:subscribe`, default ON). There is exactly **one** SSE connection — don't reintroduce a second one. While unsubscribed the socket is fully closed, so ingest events are missed (SSE has no replay buffer); on every reconnect *after the first page-load connect* (`connectedOnce` ref) the provider fires a bare `qc.invalidateQueries()` to refetch everything. The first connect is skipped because queries are already fresh. Per-`ingest` invalidation stays granular (`projects`/`totals`/`session*`/cwd-scoped keys).
+
+**Global time-range filter lives in the URL.** `web/src/lib/range.ts` is the model: a range is either a rolling preset token (`range=24h|7d|30d|all`) or an absolute `from`/`to` window (epoch ms). `__root.tsx`'s `validateSearch` + `retainSearchParams` carry `range`/`from`/`to` across every route. Presets are *rolling* — `resolveRange` resolves them against `Date.now()` at fetch time — so react-query keys use `rangeKey` (the stable token, never the resolved bound) to avoid a refetch storm. API query methods in `core/src/queries.ts` take optional `from`/`to` bounds; `daemon/src/server.ts` parses them from query params.
 
 **Web bundle is embedded, not separate.** `daemon/src/server.ts:resolveStaticRoot` walks candidate paths to find a built bundle: `packages/daemon/embedded` (production), then `packages/web/dist` (post-build but pre-embed), then dirname-relative variants. After editing web code, re-run `pnpm --filter ccpulse-web build && pnpm exec tsx scripts/embed-web.ts` (or restart `pnpm dev:web` for HMR).
 
@@ -102,5 +106,7 @@ Env: `CCPULSE_PORT` (default 7878), `CCPULSE_DB` (default `~/.ccpulse/ccpulse.db
 - New aggregation: `core/src/queries.ts`.
 - New event type rendering in modal: `web/src/routes/session.$sid.tsx`, in `extractContent` and `ContentBlock` (text/thinking/tool_use/tool_result/attachment_card/system_card).
 - New filter chip kind: extend the `KINDS` tuple, `eventKind` mapper, and `KIND_STYLES` map in `session.$sid.tsx`.
+- Time-range presets: extend `RangePreset` / `PRESETS` in `web/src/lib/range.ts`; the picker UI is `RangeControl` in `__root.tsx`.
+- SSE subscription behavior (toggle, reconnect refresh, persistence): `web/src/lib/subscription.tsx`; the pill UI is `LivePill` in `__root.tsx`.
 - Pricing: `core/src/pricing.ts` — bundled defaults plus `~/.ccpulse/models.json` override.
 - Schema migration: edit `core/src/db.ts`'s `SCHEMA` (CREATE TABLE IF NOT EXISTS is idempotent for additions). Existing rows won't backfill new columns; document that and tell users to `ccpulse reindex`.

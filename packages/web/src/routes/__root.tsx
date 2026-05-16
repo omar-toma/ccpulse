@@ -2,6 +2,7 @@ import { createRootRouteWithContext, Link, Outlet, retainSearchParams, useNaviga
 import type { QueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { PRESETS, rangeKey, useRange } from '../lib/range';
+import { useSubscription, type StreamStatus } from '../lib/subscription';
 
 /** Global time-range filter — carried in the URL across every route. */
 interface RootSearch {
@@ -30,7 +31,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
 });
 
 function RootLayout() {
-  const { lastIngest, status } = useStream();
+  const { lastIngest, status, enabled, toggle } = useSubscription();
   return (
     <div className="min-h-screen flex flex-col bg-ink-0 text-ink-700">
       <header className="sticky top-0 z-30 bg-ink-0/90 backdrop-blur border-b border-ink-300">
@@ -47,7 +48,7 @@ function RootLayout() {
           <span className="hidden lg:inline text-ink-500 text-xs">real-time analytics for Claude Code sessions</span>
           <div className="ml-auto flex items-center gap-3">
             <RangeControl />
-            <LivePill since={lastIngest} status={status} />
+            <LivePill since={lastIngest} status={status} enabled={enabled} onToggle={toggle} />
           </div>
         </div>
       </header>
@@ -210,28 +211,51 @@ function PulseMark() {
   );
 }
 
-type StreamStatus = 'connecting' | 'open' | 'error';
-
-function LivePill({ since, status }: { since: number; status: StreamStatus }) {
+function LivePill({
+  since,
+  status,
+  enabled,
+  onToggle,
+}: {
+  since: number;
+  status: StreamStatus;
+  enabled: boolean;
+  onToggle: () => void;
+}) {
   const ago = useTick(since);
-  const fresh = since > 0 && Date.now() - since < 4000;
-  const ok = status === 'open';
-  const dotColor = !ok ? 'bg-rose-400' : fresh ? 'bg-pulse' : 'bg-ink-500';
+  const paused = status === 'paused';
+  const fresh = status === 'open' && since > 0 && Date.now() - since < 4000;
+  const dotColor =
+    paused ? 'bg-ink-500' :
+    status === 'error' ? 'bg-rose-400' :
+    fresh ? 'bg-pulse' : 'bg-ink-500';
   const label =
+    paused ? 'paused' :
     status === 'connecting' ? 'connecting…' :
     status === 'error' ? 'disconnected' :
     fresh ? `live · ${ago}` :
     since ? `idle · last ${ago}` :
     'idle';
-  const tone = !ok ? 'text-rose-300' : 'text-ink-600';
+  const tone =
+    status === 'error' ? 'text-rose-300' :
+    paused ? 'text-ink-500' : 'text-ink-600';
+  const title = enabled
+    ? `SSE ${status}${since ? ` · last ingest ${new Date(since).toLocaleTimeString()}` : ''} · click to pause`
+    : 'Live updates paused · click to resume';
   return (
-    <div className={`flex items-center gap-2 text-[11px] font-mono ${tone}`} title={`SSE ${status}${since ? ` · last ingest ${new Date(since).toLocaleTimeString()}` : ''}`}>
+    <button
+      type="button"
+      onClick={onToggle}
+      title={title}
+      aria-pressed={enabled}
+      className={`flex items-center gap-2 text-[11px] font-mono rounded px-1.5 py-1 transition-colors hover:bg-ink-100 ${tone}`}
+    >
       <span className="relative inline-flex w-2 h-2">
         {fresh && <span className="absolute inset-0 rounded-full bg-pulse opacity-60 animate-ping" />}
         <span className={`relative inline-flex w-2 h-2 rounded-full ${dotColor}`} />
       </span>
       <span>{label}</span>
-    </div>
+    </button>
   );
 }
 
@@ -248,28 +272,4 @@ function useTick(stamp: number) {
   if (dt < 60000) return `${Math.round(dt / 1000)}s ago`;
   if (dt < 3600000) return `${Math.round(dt / 60000)}m ago`;
   return `${Math.round(dt / 3600000)}h ago`;
-}
-
-function useStream(): { lastIngest: number; status: StreamStatus } {
-  const [lastIngest, setLastIngest] = useState(0);
-  const [status, setStatus] = useState<StreamStatus>('connecting');
-  useEffect(() => {
-    const src = new EventSource('/api/stream');
-    const onIngest = () => setLastIngest(Date.now());
-    const onPing = () => setStatus('open'); // ping confirms channel is alive
-    const onOpen = () => setStatus('open');
-    const onError = () => setStatus(src.readyState === EventSource.OPEN ? 'open' : 'error');
-    src.addEventListener('ingest', onIngest);
-    src.addEventListener('ping', onPing);
-    src.addEventListener('open', onOpen);
-    src.addEventListener('error', onError);
-    return () => {
-      src.removeEventListener('ingest', onIngest);
-      src.removeEventListener('ping', onPing);
-      src.removeEventListener('open', onOpen);
-      src.removeEventListener('error', onError);
-      src.close();
-    };
-  }, []);
-  return { lastIngest, status };
 }

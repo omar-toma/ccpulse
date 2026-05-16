@@ -34,6 +34,9 @@ npx @omartoma/ccpulse@latest reindex            # drop SQLite index, rebuild on 
 - **Per-project rollups** — cost, tokens, sessions, tool calls, with a project list sorted by recency.
 - **Per-session timeline** — sortable by time, in / out / cache↓ / cache↑, total tokens, or cost. Filterable by kind (`tool` / `claude` / `user` / `system` / `attachment`). Click any row for a full event modal — message text, tool input JSON, hook payloads, raw JSONL line.
 - **Tool latency** — count, avg, p95, per project and per session.
+- **Global time range** — scope every view to the last 24h / 7d / 30d, a custom window, or all time; the range is kept in the URL so it survives reloads and shareable links.
+
+Live updates stream over SSE — click the status pill in the header to pause or resume the subscription; resuming refreshes everything that changed while paused.
 
 ## Caveats
 
