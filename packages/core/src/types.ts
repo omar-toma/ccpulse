@@ -77,24 +77,36 @@ export interface NormalizedEvent {
   requestId: string | null;
 }
 
+/** Inclusive epoch-ms time window. Either bound may be omitted (open-ended). */
+export interface Range {
+  from?: number;
+  to?: number;
+}
+
 export interface ProjectSummary {
   cwd: string;
+  /** All-time last activity — kept even when the project is idle within a range. */
   lastActive: number;
+  /** Sessions with at least one event inside the active range. */
   sessionCount: number;
   totalInputTokens: number;
   totalOutputTokens: number;
   totalCacheRead: number;
   totalCacheCreate: number;
   estimatedCost: number;
+  /** False when a range is active and the project had no events inside it. */
+  inRange: boolean;
 }
 
 export interface SessionSummary {
   id: string;
   cwd: string;
   title: string | null;
+  /** All-time session bounds (session identity) — not range-clamped. */
   startedAt: number;
   endedAt: number;
   branch: string | null;
+  /** Counts and totals below reflect only events inside the active range. */
   eventCount: number;
   inputTokens: number;
   outputTokens: number;
@@ -102,6 +114,8 @@ export interface SessionSummary {
   cacheCreate: number;
   estimatedCost: number;
   toolCallCount: number;
+  /** False when a range is active and the session had no events inside it. */
+  inRange: boolean;
 }
 
 export interface ToolBucket {

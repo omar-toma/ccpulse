@@ -1,10 +1,11 @@
-import { createFileRoute, Link } from '@tanstack/react-router';
+import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import Fuse from 'fuse.js';
-import { api } from '../lib/api';
-import { Card, CardHeader, EmptyState, SearchInput, Skeleton, Stat, fmtTokens, fmtMs, fmtDuration } from './index';
+import { api, type SessionMeta } from '../lib/api';
+import { Card, CardHeader, EmptyState, SearchInput, Skeleton, Stat, fmtRel, fmtTokens, fmtMs, fmtDuration } from './index';
 import { rankResults, useDebounced } from '../lib/search';
+import { isRangeActive, rangeKey, rangeLabel, useRange } from '../lib/range';
 
 const TIMELINE_FUZZY_CAP = 2000;
 
@@ -44,8 +45,15 @@ function sortValue(e: any, by: SortBy): number {
 
 function SessionView() {
   const { sid } = Route.useParams();
-  const sess = useQuery({ queryKey: ['session', sid], queryFn: () => api.session(sid) });
-  const tools = useQuery({ queryKey: ['sessionTools', sid], queryFn: () => api.sessionTools(sid) });
+  const range = useRange();
+  const rk = rangeKey(range);
+  const rangeActive = isRangeActive(range);
+  const sess = useQuery({ queryKey: ['session', sid, rk], queryFn: () => api.session(sid, range) });
+  const tools = useQuery({ queryKey: ['sessionTools', sid, rk], queryFn: () => api.sessionTools(sid, range) });
+
+  const navigate = useNavigate();
+  const clearRange = () =>
+    navigate({ to: '.', search: (p: Record<string, unknown>) => ({ ...p, range: undefined, from: undefined, to: undefined }) });
 
   const events = sess.data?.events ?? [];
   const meta = sess.data?.session;
@@ -139,13 +147,17 @@ function SessionView() {
   return (
     <div className="space-y-8">
       <div>
-        <Link to="/" className="text-[11px] text-ink-500 hover:text-ink-700 font-mono">← projects</Link>
+        <Link
+          to="/"
+          search={(prev) => ({ range: prev.range, from: prev.from, to: prev.to })}
+          className="text-[11px] text-ink-500 hover:text-ink-700 font-mono"
+        >← projects</Link>
         <h1 className="mt-2 font-mono text-xl text-ink-900 tracking-tight truncate">
           {projectName && (
             <>
               <Link
                 to="/"
-                search={{ project: projectCwd! }}
+                search={(prev) => ({ project: projectCwd!, range: prev.range, from: prev.from, to: prev.to })}
                 className="text-ink-500 hover:text-ink-800"
               >
                 {projectName}
@@ -158,8 +170,13 @@ function SessionView() {
         <div className="mt-1 text-[11px] font-mono text-ink-500">
           {meta?.title ? <span className="mr-2">{sid}</span> : null}
           {events.length} events  ·  duration {fmtDuration(duration)}
+          {rangeActive && <span className="ml-2 px-1.5 py-0.5 rounded bg-pulse/15 text-pulse-glow text-[10px]">{rangeLabel(range)}</span>}
         </div>
       </div>
+
+      {rangeActive && !sess.isLoading && events.length === 0 && (
+        <RangeExcludedNotice meta={meta} onClear={clearRange} />
+      )}
 
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         <Stat label="Cost" value={`$${totals.cost.toFixed(2)}`} sub="estimated" accent />
@@ -277,6 +294,26 @@ function SessionView() {
           onClose={() => setOpenUuid(null)}
         />
       )}
+    </div>
+  );
+}
+
+function RangeExcludedNotice({ meta, onClear }: { meta?: SessionMeta; onClear: () => void }) {
+  const ran = meta?.lastTs ? fmtRel(meta.lastTs) : null;
+  return (
+    <div className="rounded-lg border border-ink-300 bg-ink-50 px-5 py-6 text-center">
+      <div className="text-ink-700 text-[13px] font-medium">No events in the selected range</div>
+      <div className="text-ink-500 text-[12px] mt-1">
+        {ran
+          ? `This session was last active ${ran} — outside the active time range.`
+          : 'This session has no events inside the active time range.'}
+      </div>
+      <button
+        onClick={onClear}
+        className="mt-3 text-[11px] font-mono text-pulse-glow bg-pulse/10 border border-pulse/40 rounded px-3 py-1.5 hover:bg-pulse/20"
+      >
+        clear filter
+      </button>
     </div>
   );
 }

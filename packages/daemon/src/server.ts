@@ -7,7 +7,18 @@ import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { homedir } from 'node:os';
-import { openDb, Indexer, Queries, JsonlWatcher, type DB, type WatchEvent } from 'ccpulse-core';
+import { openDb, Indexer, Queries, JsonlWatcher, type DB, type Range, type WatchEvent } from 'ccpulse-core';
+import type { Context } from 'hono';
+
+/** Parse `?from=&to=` epoch-ms query params into a Range (omits non-finite bounds). */
+function parseRange(c: Context): Range {
+  const f = Number(c.req.query('from'));
+  const t = Number(c.req.query('to'));
+  return {
+    from: Number.isFinite(f) && f > 0 ? f : undefined,
+    to: Number.isFinite(t) && t > 0 ? t : undefined,
+  };
+}
 
 export interface ServerOptions {
   port?: number;
@@ -43,42 +54,42 @@ export function createServer(opts: ServerOptions = {}): Server {
 
   app.get('/api/health', (c) => c.json({ ok: true, totals: queries.totals() }));
 
-  app.get('/api/projects', (c) => c.json(queries.listProjects()));
+  app.get('/api/projects', (c) => c.json(queries.listProjects(parseRange(c))));
 
   app.get('/api/projects/:cwd/sessions', (c) => {
     const cwd = decodeURIComponent(c.req.param('cwd'));
-    return c.json(queries.listSessions(cwd));
+    return c.json(queries.listSessions(cwd, parseRange(c)));
   });
 
   app.get('/api/projects/:cwd/sessions/search', (c) => {
     const cwd = decodeURIComponent(c.req.param('cwd'));
     const q = c.req.query('q') ?? '';
-    return c.json(queries.searchEventSummaries(q, { cwd, limit: 100 }));
+    return c.json(queries.searchEventSummaries(q, { cwd, limit: 100, range: parseRange(c) }));
   });
 
   app.get('/api/sessions/search', (c) => {
     const q = c.req.query('q') ?? '';
-    return c.json(queries.searchEventSummaries(q, { limit: 200 }));
+    return c.json(queries.searchEventSummaries(q, { limit: 200, range: parseRange(c) }));
   });
 
   app.get('/api/projects/:cwd/tools', (c) => {
     const cwd = decodeURIComponent(c.req.param('cwd'));
-    return c.json(queries.toolHistogram({ cwd }));
+    return c.json(queries.toolHistogram({ cwd }, parseRange(c)));
   });
 
   app.get('/api/projects/:cwd/models', (c) => {
     const cwd = decodeURIComponent(c.req.param('cwd'));
-    return c.json(queries.modelBreakdown({ cwd }));
+    return c.json(queries.modelBreakdown({ cwd }, parseRange(c)));
   });
 
   app.get('/api/sessions/:id', (c) => {
     const id = c.req.param('id');
-    return c.json(queries.sessionTimeline(id));
+    return c.json(queries.sessionTimeline(id, undefined, parseRange(c)));
   });
 
   app.get('/api/sessions/:id/tools', (c) => {
     const id = c.req.param('id');
-    return c.json(queries.toolHistogram({ sessionId: id }));
+    return c.json(queries.toolHistogram({ sessionId: id }, parseRange(c)));
   });
 
   app.get('/api/events/:uuid', (c) => {

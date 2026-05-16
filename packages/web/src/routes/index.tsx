@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 import Fuse from 'fuse.js';
 import { api, type ContentMatch, type ProjectSummary, type SessionSummary } from '../lib/api';
 import { rankResults, useDebounced } from '../lib/search';
+import { isRangeActive, rangeKey, useRange } from '../lib/range';
 
 interface IndexSearch { project?: string; q?: string }
 
@@ -25,7 +26,10 @@ function Dashboard() {
 ============================================================================ */
 
 function ProjectsList() {
-  const projects = useQuery({ queryKey: ['projects'], queryFn: api.projects });
+  const range = useRange();
+  const rk = rangeKey(range);
+  const rangeActive = isRangeActive(range);
+  const projects = useQuery({ queryKey: ['projects', rk], queryFn: () => api.projects(range) });
   const data = projects.data ?? [];
   const totalCost = data.reduce((s, p) => s + p.estimatedCost, 0);
   const maxCost = Math.max(0.01, ...data.map((p) => p.estimatedCost));
@@ -37,8 +41,8 @@ function ProjectsList() {
   const trimmed = debouncedQuery.trim();
 
   const contentMatches = useQuery({
-    queryKey: ['globalContentSearch', trimmed],
-    queryFn: () => api.searchAllSessions(trimmed),
+    queryKey: ['globalContentSearch', trimmed, rk],
+    queryFn: () => api.searchAllSessions(trimmed, range),
     enabled: trimmed.length >= 2,
     staleTime: 30_000,
   });
@@ -131,6 +135,7 @@ function ProjectsList() {
               maxCost={maxCost}
               contentHit={projectHits.get(p.cwd) ?? null}
               query={trimmed}
+              dimmed={rangeActive && !p.inRange}
             />
           ))}
         </ul>
@@ -140,19 +145,20 @@ function ProjectsList() {
 }
 
 function ProjectRow({
-  p, maxCost, contentHit, query,
+  p, maxCost, contentHit, query, dimmed,
 }: {
   p: ProjectSummary;
   maxCost: number;
   contentHit?: { sessions: number; snippet: string } | null;
   query?: string;
+  dimmed?: boolean;
 }) {
   const share = Math.min(1, p.estimatedCost / maxCost);
   return (
-    <li className="relative">
+    <li className={`relative ${dimmed ? 'opacity-40' : ''}`} title={dimmed ? 'No activity in the selected range' : undefined}>
       <Link
         to="/"
-        search={query ? { project: p.cwd, q: query } : { project: p.cwd }}
+        search={(prev) => ({ ...prev, project: p.cwd, q: query || undefined })}
         className="block group"
       >
         <div className="absolute inset-y-0 left-0 bg-pulse/[0.05] group-hover:bg-pulse/10 transition-colors" style={{ width: `${share * 100}%` }} />
@@ -229,10 +235,13 @@ export function SearchInput({
 ============================================================================ */
 
 function ProjectView({ cwd, initialQuery = '' }: { cwd: string; initialQuery?: string }) {
-  const projects = useQuery({ queryKey: ['projects'], queryFn: api.projects });
-  const sessions = useQuery({ queryKey: ['sessions', cwd], queryFn: () => api.sessions(cwd) });
-  const tools = useQuery({ queryKey: ['projectTools', cwd], queryFn: () => api.projectTools(cwd) });
-  const models = useQuery({ queryKey: ['projectModels', cwd], queryFn: () => api.projectModels(cwd) });
+  const range = useRange();
+  const rk = rangeKey(range);
+  const rangeActive = isRangeActive(range);
+  const projects = useQuery({ queryKey: ['projects', rk], queryFn: () => api.projects(range) });
+  const sessions = useQuery({ queryKey: ['sessions', cwd, rk], queryFn: () => api.sessions(cwd, range) });
+  const tools = useQuery({ queryKey: ['projectTools', cwd, rk], queryFn: () => api.projectTools(cwd, range) });
+  const models = useQuery({ queryKey: ['projectModels', cwd, rk], queryFn: () => api.projectModels(cwd, range) });
 
   const proj = projects.data?.find((p) => p.cwd === cwd);
   const totalTokens = (proj?.totalInputTokens ?? 0) + (proj?.totalOutputTokens ?? 0);
@@ -245,8 +254,8 @@ function ProjectView({ cwd, initialQuery = '' }: { cwd: string; initialQuery?: s
   const trimmedSessionQ = debouncedSessionQuery.trim();
 
   const contentMatches = useQuery({
-    queryKey: ['projectContentSearch', cwd, trimmedSessionQ],
-    queryFn: () => api.searchProjectSessions(cwd, trimmedSessionQ),
+    queryKey: ['projectContentSearch', cwd, trimmedSessionQ, rk],
+    queryFn: () => api.searchProjectSessions(cwd, trimmedSessionQ, range),
     enabled: trimmedSessionQ.length >= 2,
     staleTime: 30_000,
   });
@@ -288,7 +297,11 @@ function ProjectView({ cwd, initialQuery = '' }: { cwd: string; initialQuery?: s
   return (
     <div className="space-y-8">
       <div>
-        <Link to="/" className="text-[11px] text-ink-500 hover:text-ink-700 font-mono">← all projects</Link>
+        <Link
+          to="/"
+          search={(prev) => ({ range: prev.range, from: prev.from, to: prev.to })}
+          className="text-[11px] text-ink-500 hover:text-ink-700 font-mono"
+        >← all projects</Link>
         <div className="flex items-baseline gap-3 mt-2">
           <h1 className="font-mono text-2xl text-ink-900 tracking-tight truncate">
             <span className="text-ink-500">{leadingPath(cwd)}</span>
@@ -386,9 +399,15 @@ function ProjectView({ cwd, initialQuery = '' }: { cwd: string; initialQuery?: s
         <ul className="divide-y divide-ink-300">
           {sessionMatches.map((s) => {
             const dur = s.endedAt - s.startedAt;
+            const dimmed = rangeActive && !s.inRange;
             return (
-              <li key={s.id}>
-                <Link to="/session/$sid" params={{ sid: s.id }} className="block group">
+              <li key={s.id} className={dimmed ? 'opacity-40' : ''} title={dimmed ? 'No activity in the selected range' : undefined}>
+                <Link
+                  to="/session/$sid"
+                  params={{ sid: s.id }}
+                  search={(prev) => ({ range: prev.range, from: prev.from, to: prev.to })}
+                  className="block group"
+                >
                   <div className="px-4 py-3 grid grid-cols-12 gap-3 items-center">
                     <div className="col-span-6 min-w-0">
                       <div className="text-[13px] text-ink-800 group-hover:text-ink-900 truncate">

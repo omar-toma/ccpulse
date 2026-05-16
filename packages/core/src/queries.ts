@@ -3,7 +3,22 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { DB } from './db.js';
 import { costOf } from './pricing.js';
-import type { ProjectSummary, SessionSummary, ToolBucket } from './types.js';
+import type { ProjectSummary, Range, SessionSummary, ToolBucket } from './types.js';
+
+/** Build a `ts >= ? AND ts <= ?` fragment + params for an optional range. */
+function rangeWhere(range: Range | undefined, col = 'ts'): { sql: string; params: number[] } {
+  const parts: string[] = [];
+  const params: number[] = [];
+  if (range?.from != null) { parts.push(`${col} >= ?`); params.push(range.from); }
+  if (range?.to != null) { parts.push(`${col} <= ?`); params.push(range.to); }
+  return { sql: parts.join(' AND '), params };
+}
+
+/** Same as rangeWhere but prefixed with ` AND ` so it can be appended to an existing clause. */
+function rangeAnd(range: Range | undefined, col = 'ts'): { sql: string; params: number[] } {
+  const { sql, params } = rangeWhere(range, col);
+  return { sql: sql ? ` AND ${sql}` : '', params };
+}
 
 export class Queries {
   constructor(private db: DB) {}
@@ -61,83 +76,102 @@ export class Queries {
     return roots.get(sessionId) ?? null;
   }
 
-  listProjects(): ProjectSummary[] {
+  listProjects(range?: Range): ProjectSummary[] {
     const { byRoot } = this.buildRootIndex();
     if (byRoot.size === 0) return [];
 
-    // One query: per-session aggregates.
+    // All-time last activity per session — drives the "last active" label and keeps
+    // idle-in-range projects in the list (greyed) rather than dropping them.
+    const allTime = this.db.prepare(`
+      SELECT session_id, MAX(ts) as last_ts FROM events GROUP BY session_id
+    `).all() as Array<{ session_id: string; last_ts: number }>;
+    const lastTsIx = new Map(allTime.map((r) => [r.session_id, r.last_ts]));
+
+    // In-range per-session aggregates.
+    const { sql, params } = rangeWhere(range);
     const perSession = this.db.prepare(`
       SELECT session_id,
              COALESCE(SUM(input_tokens), 0) as i,
              COALESCE(SUM(output_tokens), 0) as o,
              COALESCE(SUM(cache_read), 0) as cr,
              COALESCE(SUM(cache_create), 0) as cc,
-             MAX(ts) as last_ts
-      FROM events GROUP BY session_id
-    `).all() as Array<{ session_id: string; i: number; o: number; cr: number; cc: number; last_ts: number }>;
+             COUNT(*) as n
+      FROM events ${sql ? `WHERE ${sql}` : ''} GROUP BY session_id
+    `).all(...params) as Array<{ session_id: string; i: number; o: number; cr: number; cc: number; n: number }>;
     const ix = new Map(perSession.map((r) => [r.session_id, r]));
 
     const out: ProjectSummary[] = [];
     for (const [root, sids] of byRoot) {
-      let lastActive = 0, ti = 0, to = 0, tcr = 0, tcc = 0;
+      let lastActive = 0, ti = 0, to = 0, tcr = 0, tcc = 0, activeSessions = 0;
+      const inRangeSids: string[] = [];
       for (const sid of sids) {
+        const at = lastTsIx.get(sid) ?? 0;
+        if (at > lastActive) lastActive = at;
         const r = ix.get(sid);
-        if (!r) continue;
-        if (r.last_ts > lastActive) lastActive = r.last_ts;
+        if (!r || r.n === 0) continue;
+        activeSessions++;
+        inRangeSids.push(sid);
         ti += r.i; to += r.o; tcr += r.cr; tcc += r.cc;
       }
       out.push({
         cwd: root,
         lastActive,
-        sessionCount: sids.size,
+        sessionCount: activeSessions,
         totalInputTokens: ti,
         totalOutputTokens: to,
         totalCacheRead: tcr,
         totalCacheCreate: tcc,
-        estimatedCost: this.costForSessions(sids),
+        estimatedCost: this.costForSessions(inRangeSids, range),
+        inRange: activeSessions > 0,
       });
     }
-    out.sort((a, b) => b.lastActive - a.lastActive);
+    // Active-in-range projects first, then idle ones; recency within each group.
+    out.sort((a, b) => Number(b.inRange) - Number(a.inRange) || b.lastActive - a.lastActive);
     return out;
   }
 
-  /** Cost for an arbitrary set of session ids, model-weighted. */
-  private costForSessions(sessionIds: Set<string> | string[]): number {
+  /** Cost for an arbitrary set of session ids, model-weighted, optionally range-scoped. */
+  private costForSessions(sessionIds: Set<string> | string[], range?: Range): number {
     const ids = Array.isArray(sessionIds) ? sessionIds : [...sessionIds];
     if (!ids.length) return 0;
     const placeholders = ids.map(() => '?').join(',');
+    const { sql, params } = rangeAnd(range);
     const rows = this.db.prepare(`
       SELECT model, SUM(input_tokens) i, SUM(output_tokens) o, SUM(cache_read) cr, SUM(cache_create) cc
       FROM events
-      WHERE session_id IN (${placeholders}) AND model IS NOT NULL
+      WHERE session_id IN (${placeholders}) AND model IS NOT NULL${sql}
       GROUP BY model
-    `).all(...ids) as Array<{ model: string; i: number; o: number; cr: number; cc: number }>;
+    `).all(...ids, ...params) as Array<{ model: string; i: number; o: number; cr: number; cc: number }>;
     let c = 0;
     for (const r of rows) c += costOf(r.model, { input: r.i, output: r.o, cacheRead: r.cr, cacheCreate: r.cc });
     return c;
   }
 
-  listSessions(root: string): SessionSummary[] {
+  listSessions(root: string, range?: Range): SessionSummary[] {
     const sids = this.sessionsForRoot(root);
     if (!sids.length) return [];
     const placeholders = sids.map(() => '?').join(',');
+    // Range constrains the events JOIN (so SUM/COUNT recompute), but startedAt/endedAt
+    // come from unfiltered subqueries — a session's identity is not range-clamped.
+    const tc = rangeAnd(range, 'tc.ts');
+    const join = rangeAnd(range, 'e.ts');
     const rows = this.db.prepare(`
       SELECT
         s.id, s.cwd as session_cwd, s.title, s.branch,
-        MIN(e.ts) as started_at,
-        MAX(e.ts) as ended_at,
+        (SELECT MIN(ts) FROM events WHERE session_id = s.id) as started_at,
+        (SELECT MAX(ts) FROM events WHERE session_id = s.id) as ended_at,
         COUNT(e.uuid) as event_count,
         COALESCE(SUM(e.input_tokens), 0) as in_t,
         COALESCE(SUM(e.output_tokens), 0) as out_t,
         COALESCE(SUM(e.cache_read), 0) as cr_t,
         COALESCE(SUM(e.cache_create), 0) as cc_t,
-        (SELECT COUNT(*) FROM tool_calls tc WHERE tc.session_id = s.id) as tool_calls
+        (SELECT COUNT(*) FROM tool_calls tc WHERE tc.session_id = s.id${tc.sql}) as tool_calls
       FROM sessions s
-      LEFT JOIN events e ON e.session_id = s.id
+      LEFT JOIN events e ON e.session_id = s.id${join.sql}
       WHERE s.id IN (${placeholders})
       GROUP BY s.id
       ORDER BY ended_at DESC
-    `).all(...sids) as Array<any>;
+    `).all(...tc.params, ...join.params, ...sids) as Array<any>;
 
     return rows.map((r) => ({
       id: r.id,
@@ -152,21 +186,23 @@ export class Queries {
       cacheRead: r.cr_t ?? 0,
       cacheCreate: r.cc_t ?? 0,
       toolCallCount: r.tool_calls ?? 0,
-      estimatedCost: this.sessionCost(r.id),
+      estimatedCost: this.sessionCost(r.id, range),
+      inRange: (r.event_count ?? 0) > 0,
     }));
   }
 
-  sessionCost(sessionId: string): number {
+  sessionCost(sessionId: string, range?: Range): number {
+    const { sql, params } = rangeAnd(range);
     const rows = this.db.prepare(`
       SELECT model, SUM(input_tokens) i, SUM(output_tokens) o, SUM(cache_read) cr, SUM(cache_create) cc
-      FROM events WHERE session_id = ? AND model IS NOT NULL GROUP BY model
-    `).all(sessionId) as Array<{ model: string; i: number; o: number; cr: number; cc: number }>;
+      FROM events WHERE session_id = ? AND model IS NOT NULL${sql} GROUP BY model
+    `).all(sessionId, ...params) as Array<{ model: string; i: number; o: number; cr: number; cc: number }>;
     let c = 0;
     for (const r of rows) c += costOf(r.model, { input: r.i, output: r.o, cacheRead: r.cr, cacheCreate: r.cc });
     return c;
   }
 
-  toolHistogram(filter: { cwd?: string; sessionId?: string }): ToolBucket[] {
+  toolHistogram(filter: { cwd?: string; sessionId?: string }, range?: Range): ToolBucket[] {
     const sessionIds = this.scopeToSessions(filter);
     if (sessionIds && !sessionIds.length) return [];
 
@@ -176,6 +212,8 @@ export class Queries {
       where.push(`tc.session_id IN (${sessionIds.map(() => '?').join(',')})`);
       params.push(...sessionIds);
     }
+    const r = rangeWhere(range, 'tc.ts');
+    if (r.sql) { where.push(r.sql); params.push(...r.params); }
     const w = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const rows = this.db.prepare(`
       SELECT tc.name as name,
@@ -189,22 +227,24 @@ export class Queries {
       ORDER BY cnt DESC
     `).all(...params) as Array<{ name: string; cnt: number; avg_ms: number | null; total_ms: number }>;
 
-    return rows.map((r) => ({
-      name: r.name,
-      count: r.cnt,
-      avgLatencyMs: r.avg_ms,
-      p95LatencyMs: this.toolP95(r.name, sessionIds),
-      totalLatencyMs: r.total_ms ?? 0,
+    return rows.map((row) => ({
+      name: row.name,
+      count: row.cnt,
+      avgLatencyMs: row.avg_ms,
+      p95LatencyMs: this.toolP95(row.name, sessionIds, range),
+      totalLatencyMs: row.total_ms ?? 0,
     }));
   }
 
-  private toolP95(name: string, sessionIds: string[] | null): number | null {
+  private toolP95(name: string, sessionIds: string[] | null, range?: Range): number | null {
     const where: string[] = ['tc.name = ?', 'tr.ts IS NOT NULL'];
     const params: any[] = [name];
     if (sessionIds) {
       where.push(`tc.session_id IN (${sessionIds.map(() => '?').join(',')})`);
       params.push(...sessionIds);
     }
+    const r = rangeWhere(range, 'tc.ts');
+    if (r.sql) { where.push(r.sql); params.push(...r.params); }
     const rows = this.db.prepare(`
       SELECT tr.ts - tc.ts as dur
       FROM tool_calls tc
@@ -228,16 +268,22 @@ export class Queries {
     return null;
   }
 
-  sessionTimeline(sessionId: string, idleThresholdMs = 120_000) {
+  sessionTimeline(sessionId: string, idleThresholdMs = 120_000, range?: Range) {
     const meta = this.db.prepare(`
       SELECT id, title, cwd, branch FROM sessions WHERE id = ?
     `).get(sessionId) as { id: string; title: string | null; cwd: string | null; branch: string | null } | undefined;
 
+    // All-time bounds — lets the UI explain "session ran 3d ago" when a range excludes it.
+    const bounds = this.db.prepare(`
+      SELECT MIN(ts) as a, MAX(ts) as b FROM events WHERE session_id = ?
+    `).get(sessionId) as { a: number | null; b: number | null };
+
+    const r = rangeAnd(range);
     const rows = this.db.prepare(`
       SELECT uuid, type, role, ts, model, input_tokens, output_tokens, cache_read, cache_create,
              tool_name, tool_use_id, tool_result_for_id, parent_uuid, is_sidechain
-      FROM events WHERE session_id = ? ORDER BY ts ASC
-    `).all(sessionId) as Array<any>;
+      FROM events WHERE session_id = ?${r.sql} ORDER BY ts ASC
+    `).all(sessionId, ...r.params) as Array<any>;
 
     // Batch-fetch tool_calls.input_json for any tool_use or tool_result event so we can
     // expose a search-friendly flattened text on each row.
@@ -280,9 +326,11 @@ export class Queries {
       if (dt > idleThresholdMs) gaps.push({ from: events[i - 1].ts, to: events[i].ts, durationMs: dt });
     }
     const projectRoot = this.rootForSession(sessionId);
+    const firstTs = bounds.a ?? null;
+    const lastTs = bounds.b ?? null;
     const session = meta
-      ? { id: meta.id, title: meta.title, cwd: meta.cwd, branch: meta.branch, projectRoot }
-      : { id: sessionId, title: null, cwd: null, branch: null, projectRoot };
+      ? { id: meta.id, title: meta.title, cwd: meta.cwd, branch: meta.branch, projectRoot, firstTs, lastTs }
+      : { id: sessionId, title: null, cwd: null, branch: null, projectRoot, firstTs, lastTs };
     return { session, events, gaps };
   }
 
@@ -333,7 +381,7 @@ export class Queries {
     };
   }
 
-  modelBreakdown(filter: { cwd?: string; sessionId?: string }) {
+  modelBreakdown(filter: { cwd?: string; sessionId?: string }, range?: Range) {
     const sessionIds = this.scopeToSessions(filter);
     if (sessionIds && !sessionIds.length) return [];
 
@@ -343,6 +391,8 @@ export class Queries {
       where.push(`session_id IN (${sessionIds.map(() => '?').join(',')})`);
       params.push(...sessionIds);
     }
+    const r = rangeWhere(range);
+    if (r.sql) { where.push(r.sql); params.push(...r.params); }
     const rows = this.db.prepare(`
       SELECT model,
              SUM(input_tokens) as i,
@@ -370,7 +420,7 @@ export class Queries {
    */
   searchEventSummaries(
     q: string,
-    opts: { cwd?: string; limit?: number } = {},
+    opts: { cwd?: string; limit?: number; range?: Range } = {},
   ): Array<{ sessionId: string; cwd: string | null; snippet: string; matchCount: number; lastTs: number }> {
     const query = q.trim().toLowerCase();
     if (query.length < 2) return [];
@@ -384,6 +434,19 @@ export class Queries {
       sessionIds = [...roots.keys()];
     }
     if (!sessionIds.length) return [];
+
+    // Range-scope: restrict matching to event uuids whose ts falls inside the window.
+    // `null` means no range active — match every event.
+    let inRangeUuids: Set<string> | null = null;
+    const rangeClause = rangeWhere(opts.range);
+    if (rangeClause.sql) {
+      const uuidRows = this.db.prepare(`
+        SELECT uuid FROM events
+        WHERE session_id IN (${sessionIds.map(() => '?').join(',')}) AND ${rangeClause.sql}
+      `).all(...sessionIds, ...rangeClause.params) as Array<{ uuid: string }>;
+      inRangeUuids = new Set(uuidRows.map((r) => r.uuid));
+      if (inRangeUuids.size === 0) return [];
+    }
 
     // Order by recency so top results surface first when we hit the limit.
     const lastTsRows = this.db.prepare(`
@@ -405,7 +468,8 @@ export class Queries {
 
       let matchCount = 0;
       let snippet: string | null = null;
-      for (const raw of entry.byUuid.values()) {
+      for (const [uuid, raw] of entry.byUuid) {
+        if (inRangeUuids && !inRangeUuids.has(uuid)) continue;
         const role = raw.message?.role ?? raw.role ?? null;
         const toolName = Array.isArray(raw.message?.content)
           ? (raw.message.content.find((b: any) => b?.type === 'tool_use')?.name ?? null)
