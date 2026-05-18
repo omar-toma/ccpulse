@@ -4,8 +4,9 @@
 
 ![ccpulse dashboard](https://raw.githubusercontent.com/omar-toma/ccpulse/main/docs/screenshot.png)
 
-<!-- After uploading the demo clip, drag ccpulse-demo.mp4 into the GitHub README
-     editor on this line so it renders as an inline player. -->
+https://github.com/user-attachments/assets/201153c9-f49c-400a-8698-75fd05255a1a
+
+
 
 Live, local-first analytics for [Claude Code](https://claude.com/claude-code) —
 tokens, cost, tool latency, and session timelines, sliced by project and session.
