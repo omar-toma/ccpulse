@@ -29,6 +29,8 @@ function readPackageVersion(): string {
 
 const DEFAULT_PORT = Number(process.env.CCPULSE_PORT) || 7878;
 const DB_PATH = process.env.CCPULSE_DB || join(homedir(), '.ccpulse', 'ccpulse.db');
+// Override the JSONL root (default ~/.claude/projects). Used for tests and demo data.
+const CLAUDE_DIR = process.env.CCPULSE_CLAUDE_DIR || undefined;
 
 const args = process.argv.slice(2);
 // Treat a leading flag (`--port`, `--no-open`, etc.) as "no subcommand" so that
@@ -46,7 +48,7 @@ function parseFlag(name: string): string | undefined {
 async function runDaemon() {
   const port = Number(parseFlag('port')) || DEFAULT_PORT;
   const noOpen = args.includes('--no-open');
-  const server = createServer({ port, dbPath: DB_PATH });
+  const server = createServer({ port, dbPath: DB_PATH, claudeDir: CLAUDE_DIR });
   const { port: actualPort } = await server.start();
   const baseUrl = `http://localhost:${actualPort}`;
   console.log(`ccpulse daemon listening on ${baseUrl}`);
@@ -164,8 +166,9 @@ usage:
   ccpulse --help                            this message
 
 env:
-  CCPULSE_PORT (default 7878)
-  CCPULSE_DB   (default ~/.ccpulse/ccpulse.db)
+  CCPULSE_PORT        (default 7878)
+  CCPULSE_DB          (default ~/.ccpulse/ccpulse.db)
+  CCPULSE_CLAUDE_DIR  (default ~/.claude/projects)
 `);
 }
 

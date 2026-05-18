@@ -1,7 +1,7 @@
 {
   "name": "@omartoma/ccpulse",
   "version": "0.1.9",
-  "description": "Real-time analytics dashboard for Claude Code sessions",
+  "description": "Local-first analytics for Claude Code sessions — tokens, cost, tool latency, and timelines",
   "type": "module",
   "bin": {
     "ccpulse": "./dist/bin.js"
@@ -22,7 +22,7 @@
     "tsup": "^8.3.5",
     "typescript": "^5.6.3"
   },
-  "keywords": ["claude", "claude-code", "analytics", "monitoring", "dashboard", "tokens", "telemetry"],
+  "keywords": ["claude", "claude-code", "anthropic", "analytics", "monitoring", "dashboard", "tokens", "cost", "usage", "telemetry"],
   "license": "MIT",
   "author": "omartoma",
   "engines": {
